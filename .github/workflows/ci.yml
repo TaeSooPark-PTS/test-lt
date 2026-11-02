@@ -1,0 +1,110 @@
+name: Windows & Cross-Platform CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gate:
+    name: Typecheck, Unit Tests & Bundle (Ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript strict typecheck (Renderer & Electron)
+        run: npm run typecheck
+
+      - name: Run Vitest unit & integration suite
+        run: npm test
+
+      - name: Build production Renderer & Electron bundles
+        run: npm run build
+
+  windows-verify-and-package:
+    name: Windows E2E Smoke, Pipeline Verify & NSIS Installer
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      ELECTRON_CACHE: ${{ runner.temp }}\electron-cache
+      ELECTRON_BUILDER_CACHE: ${{ runner.temp }}\electron-builder-cache
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies on Windows
+        run: npm ci
+
+      - name: TypeScript strict typecheck on Windows
+        run: npm run typecheck
+
+      - name: Run Vitest unit & integration suite on Windows NTFS
+        run: npm test
+
+      - name: Run Electron headless layout & translation smoke test on Windows
+        run: npm run smoke
+
+      - name: Run Electron Tiro WebContentsView & MutationObserver E2E verification on Windows
+        run: npm run poc:verify:ci
+
+      - name: Build Windows x64 NSIS Installer & Unpacked App
+        run: npm run dist:win
+
+      - name: Verify Windows unpacked ASAR & ONNX WASM runtime integrity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $unpackedDir = "release/win-unpacked"
+          $exePath = Join-Path $unpackedDir "Tiro Live Bilingual Caption Workspace.exe"
+          $asarPath = Join-Path $unpackedDir "resources/app.asar"
+          $wasmPath = Join-Path $unpackedDir "resources/app.asar.unpacked/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm"
+          $mjsPath = Join-Path $unpackedDir "resources/app.asar.unpacked/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs"
+
+          foreach ($p in @($exePath, $asarPath, $wasmPath, $mjsPath)) {
+            if (-not (Test-Path $p)) {
+              throw "Missing required Windows runtime file: $p"
+            }
+            Write-Host "Verified: $p"
+          }
+
+          $installers = @(Get-ChildItem -Path "release" -Filter "*Setup*.exe" -ErrorAction SilentlyContinue)
+          if ($installers.Count -eq 0) {
+            $installers = @(Get-ChildItem -Path "release" -Filter "*.exe" | Where-Object { $_.Name -notlike "*unpacked*" })
+          }
+          if ($installers.Count -eq 0) {
+            throw "No NSIS Windows installer (.exe) found in release/"
+          }
+          Write-Host "Verified NSIS Installer: $($installers[0].FullName)"
+
+      - name: Upload Windows x64 NSIS Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiro-live-bilingual-workspace-win-x64
+          path: |
+            release/*.exe
+            release/*.blockmap
+          if-no-files-found: error
+          retention-days: 14

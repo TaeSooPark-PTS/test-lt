@@ -141,6 +141,13 @@ export class TiroCaptionProvider implements CaptionProvider {
             state: 'error',
             message: tel.errorMessage
           });
+        } else if (tel.waitingForElement) {
+          this.updateStatus({
+            providerName: 'TiroCaptionProvider',
+            isMock: false,
+            state: 'connecting',
+            message: `자막 영역 대기 중 (${tel.targetSelector ?? ''}) - Tiro 음성인식이 시작되면 자동 연결됩니다.`
+          });
         } else if (tel.observing) {
           this.updateStatus({
             providerName: 'TiroCaptionProvider',

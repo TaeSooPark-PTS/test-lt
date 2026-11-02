@@ -1,5 +1,9 @@
 appId: com.tiro.bilingual.workspace
 productName: Tiro Live Bilingual Caption Workspace
+npmRebuild: false
+asar: true
+asarUnpack:
+  - node_modules/onnxruntime-web/dist/**/*
 directories:
   output: release
 files:

@@ -233,6 +233,7 @@ function collectDomDiagnostics() {
 // ============================================================================
 let radarObserver: MutationObserver | null = null;
 let radarFlushTimer: ReturnType<typeof setInterval> | null = null;
+let autoAttachOnRadar = false;
 const radarMap = new Map<Element, RadarEntry>();
 
 function resolveMeaningfulContainer(node: Node): Element | null {
@@ -261,9 +262,22 @@ function resolveMeaningfulContainer(node: Node): Element | null {
 }
 
 function flushRadarCandidates(): void {
-  const candidates = Array.from(radarMap.values())
+  const sortedEntries = Array.from(radarMap.values())
     .filter((entry) => document.contains(entry.el) && entry.sampleText.length > 0)
-    .sort((a, b) => b.mutationCount - a.mutationCount || b.lastUpdatedAt - a.lastUpdatedAt)
+    .sort((a, b) => b.mutationCount - a.mutationCount || b.lastUpdatedAt - a.lastUpdatedAt);
+
+  if (autoAttachOnRadar && sortedEntries.length > 0) {
+    const best = sortedEntries[0];
+    if (best.mutationCount >= 2 || best.sampleText.length >= 12) {
+      autoAttachOnRadar = false;
+      const info = buildPickedInfo(best.el);
+      ipcRenderer.send('tiro-preload:element-picked', info);
+      startCaptionObserver(info.selector, { waitForElement: true, preserveHistory: true });
+      stopMutationRadar();
+    }
+  }
+
+  const candidates = sortedEntries
     .slice(0, 6)
     .map((entry) => ({
       selector: computeSelector(entry.el),
@@ -320,6 +334,7 @@ function startMutationRadar(): void {
 }
 
 function stopMutationRadar(): void {
+  autoAttachOnRadar = false;
   if (radarObserver) {
     radarObserver.disconnect();
     radarObserver = null;
@@ -328,6 +343,64 @@ function stopMutationRadar(): void {
     clearInterval(radarFlushTimer);
     radarFlushTimer = null;
   }
+}
+
+function autoDetectCaptionTarget(): void {
+  if (!isAllowedInspectionHost() || !document.body) {
+    telemetry.errorMessage = 'Tiro 워크스페이스 화면에서 자동 탐색을 실행해 주세요.';
+    sendTelemetry();
+    return;
+  }
+
+  // 1. Prefer already-observed active mutation radar entry if available
+  const radarBest = Array.from(radarMap.values())
+    .filter((entry) => document.contains(entry.el) && entry.sampleText.length > 0)
+    .sort((a, b) => b.mutationCount - a.mutationCount || b.lastUpdatedAt - a.lastUpdatedAt)[0];
+
+  if (radarBest) {
+    const info = buildPickedInfo(radarBest.el);
+    ipcRenderer.send('tiro-preload:element-picked', info);
+    startCaptionObserver(info.selector, { waitForElement: true, preserveHistory: true });
+    return;
+  }
+
+  // 2. Semantic live-region / transcript container heuristics
+  const heuristicSelectors = [
+    '[data-testid*="transcript" i]',
+    '[data-testid*="caption" i]',
+    '[data-testid*="utterance" i]',
+    '[aria-live="polite"]',
+    '[aria-live="assertive"]',
+    '[role="log"]',
+    '[class*="transcript" i]',
+    '[class*="utterance" i]',
+    '[class*="caption" i]'
+  ];
+
+  for (const query of heuristicSelectors) {
+    const matches = Array.from(document.querySelectorAll(query)).filter((el) => {
+      if (el.closest('[data-tiro-poc-overlay="true"]')) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width >= 120 && rect.height >= 24;
+    });
+    const withText = matches.find(
+      (el) => normalizeCaptionText((el as HTMLElement).innerText || el.textContent).length > 0
+    );
+    const chosen = withText ?? matches[0];
+    if (chosen) {
+      const info = buildPickedInfo(chosen);
+      ipcRenderer.send('tiro-preload:element-picked', info);
+      startCaptionObserver(info.selector, { waitForElement: true, preserveHistory: true });
+      return;
+    }
+  }
+
+  // 3. Fallback: arm Mutation Radar in auto-attach mode so as soon as speech text mutates, we lock onto it
+  startMutationRadar();
+  autoAttachOnRadar = true;
+  telemetry.waitingForElement = true;
+  telemetry.errorMessage = undefined;
+  sendTelemetry();
 }
 
 // ============================================================================
@@ -495,6 +568,7 @@ const telemetry = {
   lastLatencyMs: null as number | null,
   avgLatencyMs: null as number | null,
   lastSampleText: '',
+  waitingForElement: false,
   errorMessage: undefined as string | undefined
 };
 
@@ -781,8 +855,24 @@ function scanObservedTarget(mutationAt: number, isInitialAttach = false): void {
   }
 }
 
-function startCaptionObserver(selector: string): void {
+let waitForElementTimer: ReturnType<typeof setInterval> | null = null;
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+let observedTargetEl: Element | null = null;
+
+function clearWaitTimers(): void {
+  if (waitForElementTimer) {
+    clearInterval(waitForElementTimer);
+    waitForElementTimer = null;
+  }
+}
+
+function startCaptionObserver(
+  selector: string,
+  options: { waitForElement?: boolean; preserveHistory?: boolean } = {}
+): void {
+  const preservedFinalized = options.preserveHistory ? [...recentFinalizedTexts] : [];
   stopCaptionObserver();
+  clearWaitTimers();
   if (!isAllowedInspectionHost()) {
     telemetry.errorMessage = '허용된 Tiro 도메인이 아니므로 감시를 시작할 수 없습니다.';
     sendTelemetry();
@@ -793,6 +883,27 @@ function startCaptionObserver(selector: string): void {
   if (!targetEl) {
     telemetry.observing = false;
     telemetry.targetSelector = selector;
+    if (options.waitForElement) {
+      // Tiro is an SPA: the caption container may only appear after login / starting a session.
+      telemetry.errorMessage = undefined;
+      telemetry.mode = 'idle';
+      telemetry.waitingForElement = true;
+      sendTelemetry();
+      const startedAt = Date.now();
+      waitForElementTimer = setInterval(() => {
+        if (document.querySelector(selector)) {
+          clearWaitTimers();
+          recentFinalizedTexts = preservedFinalized;
+          startCaptionObserver(selector, { preserveHistory: true });
+        } else if (Date.now() - startedAt > 10 * 60 * 1000) {
+          clearWaitTimers();
+          telemetry.waitingForElement = false;
+          telemetry.errorMessage = `자막 영역(${selector})을 10분 동안 찾지 못했습니다. Tiro 설정에서 다시 선택하세요.`;
+          sendTelemetry();
+        }
+      }, 1000);
+      return;
+    }
     telemetry.errorMessage = `요소를 찾을 수 없습니다: ${selector}`;
     sendTelemetry();
     return;
@@ -800,11 +911,13 @@ function startCaptionObserver(selector: string): void {
 
   activeSelector = selector;
   lastPickedElement = targetEl;
+  observedTargetEl = targetEl;
   trackedByNode = new WeakMap<Element, TrackedUtterance>();
   activeUtterance = null;
-  recentFinalizedTexts = [];
+  recentFinalizedTexts = preservedFinalized;
 
   telemetry.observing = true;
+  telemetry.waitingForElement = false;
   telemetry.targetSelector = selector;
   telemetry.errorMessage = undefined;
 
@@ -832,10 +945,25 @@ function startCaptionObserver(selector: string): void {
     characterData: true
   });
 
+  // Watchdog: if Tiro re-mounts the caption container (new session, route change), re-attach silently.
+  watchdogTimer = setInterval(() => {
+    if (!activeSelector) return;
+    const current = document.querySelector(activeSelector);
+    if (!observedTargetEl || !observedTargetEl.isConnected || (current && current !== observedTargetEl)) {
+      startCaptionObserver(activeSelector, { waitForElement: true, preserveHistory: true });
+    }
+  }, 2000);
+
   sendTelemetry();
 }
 
 function stopCaptionObserver(): void {
+  clearWaitTimers();
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+  observedTargetEl = null;
   if (captionObserver) {
     captionObserver.disconnect();
     captionObserver = null;
@@ -860,7 +988,16 @@ function stopCaptionObserver(): void {
 // ============================================================================
 ipcRenderer.on(
   'tiro-preload:command',
-  (_event, payload: { action: string; selector?: string; latencySampleMs?: number }) => {
+  (
+    _event,
+    payload: {
+      action: string;
+      selector?: string;
+      latencySampleMs?: number;
+      waitForElement?: boolean;
+      preserveHistory?: boolean;
+    }
+  ) => {
     switch (payload.action) {
       case 'diagnostics': {
         const diag = collectDomDiagnostics();
@@ -887,13 +1024,21 @@ ipcRenderer.on(
         selectParentOfPicked();
         break;
       }
+      case 'auto-detect': {
+        autoDetectCaptionTarget();
+        break;
+      }
       case 'start-observer': {
         if (payload.selector) {
-          startCaptionObserver(payload.selector);
+          startCaptionObserver(payload.selector, {
+            waitForElement: Boolean(payload.waitForElement),
+            preserveHistory: Boolean(payload.preserveHistory)
+          });
         }
         break;
       }
       case 'stop-observer': {
+        telemetry.waitingForElement = false;
         stopCaptionObserver();
         break;
       }

@@ -7,11 +7,15 @@ export interface DisplaySummary {
   height: number;
   x: number;
   y: number;
+  scaleFactor?: number;
   isPrimary: boolean;
 }
 
 export interface WindowState {
   isFullScreen: boolean;
+  isMaximized: boolean;
+  isAlwaysOnTop: boolean;
+  isPresentationMode: boolean;
   currentDisplayId: number;
 }
 
@@ -21,6 +25,8 @@ export interface RuntimeInfo {
   electronVersion: string;
   chromeVersion: string;
   nodeVersion: string;
+  isSmokeTest?: boolean;
+  isPocVerify?: boolean;
 }
 
 export interface TiroBoundsRect {
@@ -37,8 +43,14 @@ const tiroAPI = {
   navigate: (url: string) => ipcRenderer.invoke('tiro:navigate', url),
   navAction: (action: 'back' | 'forward' | 'reload') =>
     ipcRenderer.invoke('tiro:nav-action', action),
-  sendCommand: (payload: { action: string; selector?: string; latencySampleMs?: number }) =>
-    ipcRenderer.invoke('tiro:command', payload),
+  sendCommand: (payload: {
+    action: string;
+    selector?: string;
+    latencySampleMs?: number;
+    waitForElement?: boolean;
+    preserveHistory?: boolean;
+  }) => ipcRenderer.invoke('tiro:command', payload),
+  setZoom: (factor: number) => ipcRenderer.invoke('tiro:set-zoom', factor),
   onViewState: (callback: (state: unknown) => void): (() => void) => {
     const listener = (_ev: Electron.IpcRendererEvent, state: unknown) => callback(state);
     ipcRenderer.on('tiro:view-state', listener);
@@ -71,6 +83,47 @@ const tiroAPI = {
   }
 };
 
+const settingsAPI = {
+  get: () => ipcRenderer.invoke('settings:get'),
+  update: (patch: unknown) => ipcRenderer.invoke('settings:update', patch),
+  onChanged: (callback: (settings: unknown) => void): (() => void) => {
+    const listener = (_ev: Electron.IpcRendererEvent, s: unknown) => callback(s);
+    ipcRenderer.on('settings:changed', listener);
+    return () => ipcRenderer.removeListener('settings:changed', listener);
+  }
+};
+
+const translatorAPI = {
+  getStatus: () => ipcRenderer.invoke('translator:get-status'),
+  prepare: () => ipcRenderer.invoke('translator:prepare'),
+  translate: (text: string, captionId?: string) =>
+    ipcRenderer.invoke('translator:translate', text, captionId),
+  cancelPending: () => ipcRenderer.invoke('translator:cancel-pending'),
+  onStatus: (callback: (status: unknown) => void): (() => void) => {
+    const listener = (_ev: Electron.IpcRendererEvent, s: unknown) => callback(s);
+    ipcRenderer.on('translator:status', listener);
+    return () => ipcRenderer.removeListener('translator:status', listener);
+  }
+};
+
+const layoutAPI = {
+  apply: (req: unknown) => ipcRenderer.invoke('layout:apply', req),
+  arrangePpt: (startSlideshow: boolean) => ipcRenderer.invoke('layout:arrange-ppt', startSlideshow),
+  exit: () => ipcRenderer.invoke('layout:exit')
+};
+
+const windowControlsAPI = {
+  minimize: () => ipcRenderer.invoke('window:minimize'),
+  toggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),
+  close: () => ipcRenderer.invoke('window:close'),
+  toggleAlwaysOnTop: () => ipcRenderer.invoke('window:toggle-always-on-top')
+};
+
+const captionsAPI = {
+  exportFile: (req: { format: string; content: string; suggestedName: string }) =>
+    ipcRenderer.invoke('captions:export-file', req)
+};
+
 const electronAPI = {
   getRuntimeInfo: (): Promise<RuntimeInfo> => ipcRenderer.invoke('app:get-runtime-info'),
   getWindowState: (): Promise<WindowState> => ipcRenderer.invoke('window:get-state'),
@@ -92,7 +145,12 @@ const electronAPI = {
   notifySmokeTestReady: (summary: string): void => {
     ipcRenderer.send('smoke-test:ready', summary);
   },
-  tiro: tiroAPI
+  tiro: tiroAPI,
+  settings: settingsAPI,
+  translator: translatorAPI,
+  layout: layoutAPI,
+  win: windowControlsAPI,
+  captions: captionsAPI
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

@@ -43,6 +43,7 @@ export interface TiroObserverTelemetry {
   lastLatencyMs: number | null;
   avgLatencyMs: number | null;
   lastSampleText: string;
+  waitingForElement?: boolean;
   errorMessage?: string;
 }
 

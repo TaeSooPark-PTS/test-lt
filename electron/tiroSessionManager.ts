@@ -42,16 +42,49 @@ export class TiroSessionManager {
   private mainWindow: BrowserWindow;
   private view: WebContentsView | null = null;
   private bounds: TiroBoundsRect = { x: 0, y: 0, width: 0, height: 0 };
+  /** Last non-empty bounds; reused while hidden so Tiro keeps a real layout size. */
+  private lastRealBounds: TiroBoundsRect = { x: 0, y: 0, width: 960, height: 900 };
   private visible = false;
   private pickerActive = false;
   private radarActive = false;
   private observing = false;
   private targetSelector: string | null = null;
+  /** Selector the user wants observed; re-attached automatically after reloads/navigation. */
+  private desiredSelector: string | null = null;
   private lastError: string | null = null;
   private sessionConfigured = false;
+  private zoomFactor = 1;
+  private getInitialUrl: () => string;
+  private onPersistUrl?: (url: string) => void;
 
-  constructor(mainWindow: BrowserWindow) {
+  constructor(
+    mainWindow: BrowserWindow,
+    getInitialUrl: () => string = () => DEFAULT_TIRO_URL,
+    onPersistUrl?: (url: string) => void
+  ) {
     this.mainWindow = mainWindow;
+    this.getInitialUrl = getInitialUrl;
+    this.onPersistUrl = onPersistUrl;
+  }
+
+  private maybePersistWorkspaceUrl(rawUrl: string): void {
+    if (!this.onPersistUrl || !rawUrl) return;
+    try {
+      const parsed = new URL(rawUrl);
+      const isTiroDomain =
+        parsed.protocol === 'https:' &&
+        (parsed.hostname === 'tiro.ooo' ||
+          parsed.hostname.endsWith('.tiro.ooo') ||
+          parsed.hostname === 'tiro.ax' ||
+          parsed.hostname.endsWith('.tiro.ax'));
+      if (!isTiroDomain) return;
+      const isAuthPath = /^\/(ko\/|en\/|ja\/)?(login|signin|auth)(\/|$)/i.test(parsed.pathname);
+      if (!isAuthPath) {
+        this.onPersistUrl(rawUrl);
+      }
+    } catch {
+      // ignore invalid URLs
+    }
   }
 
   private configureSessionOnce(): void {
@@ -142,14 +175,23 @@ export class TiroSessionManager {
     const emitState = () => this.broadcastViewState();
     wc.on('did-start-loading', emitState);
     wc.on('did-stop-loading', emitState);
-    wc.on('did-navigate', () => {
+    wc.on('did-navigate', (_event, url) => {
       this.pickerActive = false;
       this.radarActive = false;
       this.observing = false;
       this.lastError = null;
+      this.maybePersistWorkspaceUrl(url);
       emitState();
     });
-    wc.on('did-navigate-in-page', emitState);
+    wc.on('did-navigate-in-page', (_event, url) => {
+      this.maybePersistWorkspaceUrl(url);
+      emitState();
+      this.scheduleReattach(800);
+    });
+    wc.on('did-finish-load', () => {
+      if (this.zoomFactor !== 1) wc.setZoomFactor(this.zoomFactor);
+      this.scheduleReattach(600);
+    });
     wc.on('page-title-updated', emitState);
     wc.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       if (isMainFrame && errorCode !== -3) {
@@ -157,11 +199,51 @@ export class TiroSessionManager {
         emitState();
       }
     });
+    wc.on('render-process-gone', (_event, details) => {
+      this.lastError = `Tiro 화면이 종료되었습니다 (${details.reason}). 자동으로 다시 불러옵니다.`;
+      this.observing = false;
+      emitState();
+      setTimeout(() => {
+        if (!wc.isDestroyed()) wc.reload();
+      }, 1500);
+    });
 
-    const targetUrl = initialUrl || DEFAULT_TIRO_URL;
+    const targetUrl = initialUrl || this.getInitialUrl() || DEFAULT_TIRO_URL;
     void wc.loadURL(targetUrl);
 
     return view;
+  }
+
+  private reattachTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Re-sends the observer command for the saved selector (preload waits until the element exists). */
+  private scheduleReattach(delayMs: number): void {
+    if (!this.desiredSelector) return;
+    if (this.reattachTimer) clearTimeout(this.reattachTimer);
+    this.reattachTimer = setTimeout(() => {
+      this.reattachTimer = null;
+      if (!this.desiredSelector || !this.view || this.view.webContents.isDestroyed()) return;
+      this.view.webContents.send('tiro-preload:command', {
+        action: 'start-observer',
+        selector: this.desiredSelector,
+        waitForElement: true,
+        preserveHistory: true
+      });
+    }, delayMs);
+  }
+
+  public setZoom(factor: number): void {
+    this.zoomFactor = Math.min(1.5, Math.max(0.4, factor));
+    if (this.view && !this.view.webContents.isDestroyed()) {
+      this.view.webContents.setZoomFactor(this.zoomFactor);
+    }
+  }
+
+  public setDesiredSelector(selector: string | null): void {
+    this.desiredSelector = selector ? selector.trim() : null;
+    if (this.desiredSelector) {
+      this.scheduleReattach(300);
+    }
   }
 
   public getState(): TiroViewStateSnapshot {
@@ -201,15 +283,21 @@ export class TiroSessionManager {
       width: Math.max(0, Math.round(rect.width)),
       height: Math.max(0, Math.round(rect.height))
     };
+    if (this.bounds.width > 0 && this.bounds.height > 0) {
+      this.lastRealBounds = { ...this.bounds };
+    }
     this.applyBounds();
   }
 
   private applyBounds(): void {
     if (!this.view || this.view.webContents.isDestroyed()) return;
     if (!this.visible || this.bounds.width <= 0 || this.bounds.height <= 0) {
-      this.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+      // Keep a real layout size while hidden: virtualized transcript lists may stop rendering at 0×0.
+      this.view.setVisible(false);
+      this.view.setBounds(this.lastRealBounds);
       return;
     }
+    this.view.setVisible(true);
     this.view.setBounds(this.bounds);
   }
 
@@ -253,6 +341,7 @@ export class TiroSessionManager {
     latencySampleMs?: number;
   }): TiroViewStateSnapshot {
     const view = this.ensureView();
+    let outbound: Record<string, unknown> = { ...payload };
     if (payload.action === 'start-picker') {
       this.pickerActive = true;
     } else if (payload.action === 'stop-picker') {
@@ -264,11 +353,14 @@ export class TiroSessionManager {
     } else if (payload.action === 'start-observer' && payload.selector) {
       this.observing = true;
       this.targetSelector = payload.selector;
+      this.desiredSelector = payload.selector;
+      outbound = { ...outbound, waitForElement: true };
     } else if (payload.action === 'stop-observer') {
       this.observing = false;
+      this.desiredSelector = null;
     }
 
-    view.webContents.send('tiro-preload:command', payload);
+    view.webContents.send('tiro-preload:command', outbound);
     this.broadcastViewState();
     return this.getState();
   }
@@ -329,6 +421,10 @@ export function registerTiroIpcHandlers(
 
   ipcMain.handle('tiro:set-bounds', (_event, rect: TiroBoundsRect) => {
     getManager()?.setBounds(rect);
+  });
+
+  ipcMain.handle('tiro:set-zoom', (_event, factor: number) => {
+    getManager()?.setZoom(Number(factor) || 1);
   });
 
   ipcMain.handle('tiro:navigate', async (_event, url: string) => {

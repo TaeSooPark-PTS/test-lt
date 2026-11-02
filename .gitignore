@@ -6,3 +6,5 @@ release/
 .DS_Store
 .env
 .env.*
+.model-cache/
+scripts/spike-translate.cjs
