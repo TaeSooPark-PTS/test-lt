@@ -1,5 +1,9 @@
 import type { CaptionEvent, CaptionProviderStatus } from '../../types/caption';
-import type { TiroObserverTelemetry, TiroRawCaptionPayload } from '../../types/tiro';
+import type {
+  TiroElementFingerprint,
+  TiroObserverTelemetry,
+  TiroRawCaptionPayload
+} from '../../types/tiro';
 import type { CaptionProvider } from './CaptionProvider';
 
 /**
@@ -12,6 +16,7 @@ export class TiroCaptionProvider implements CaptionProvider {
   private unsubCaptionIpc: (() => void) | null = null;
   private unsubTelemetryIpc: (() => void) | null = null;
   private targetSelector: string | null = null;
+  private targetFingerprint: TiroElementFingerprint | null = null;
   private active = false;
 
   private status: CaptionProviderStatus = {
@@ -21,8 +26,14 @@ export class TiroCaptionProvider implements CaptionProvider {
     message: 'Tiro 로그인 및 자막 DOM 요소 선택 대기 중'
   };
 
-  public setTargetSelector(selector: string | null): void {
+  public setTargetSelector(
+    selector: string | null,
+    fingerprint?: TiroElementFingerprint | null
+  ): void {
     this.targetSelector = selector ? selector.trim() : null;
+    if (fingerprint !== undefined) {
+      this.targetFingerprint = fingerprint ?? null;
+    }
   }
 
   public getTargetSelector(): string | null {
@@ -63,12 +74,16 @@ export class TiroCaptionProvider implements CaptionProvider {
 
     await tiroBridge.sendCommand({
       action: 'start-observer',
-      selector: this.targetSelector
+      selector: this.targetSelector,
+      fingerprint: this.targetFingerprint
     });
   }
 
-  public async observeSelector(selector: string): Promise<void> {
-    this.setTargetSelector(selector);
+  public async observeSelector(
+    selector: string,
+    fingerprint?: TiroElementFingerprint | null
+  ): Promise<void> {
+    this.setTargetSelector(selector, fingerprint);
     await this.connect();
   }
 

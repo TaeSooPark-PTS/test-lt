@@ -1,5 +1,6 @@
 import { BrowserWindow, ipcMain, session, WebContentsView } from 'electron';
 import * as path from 'path';
+import type { TiroElementFingerprint } from './tiroDomMatcher';
 
 export interface TiroBoundsRect {
   x: number;
@@ -51,6 +52,7 @@ export class TiroSessionManager {
   private targetSelector: string | null = null;
   /** Selector the user wants observed; re-attached automatically after reloads/navigation. */
   private desiredSelector: string | null = null;
+  private desiredFingerprint: TiroElementFingerprint | null = null;
   private lastError: string | null = null;
   private sessionConfigured = false;
   private zoomFactor = 1;
@@ -228,6 +230,7 @@ export class TiroSessionManager {
       this.view.webContents.send('tiro-preload:command', {
         action: 'start-observer',
         selector: this.desiredSelector,
+        fingerprint: this.desiredFingerprint,
         waitForElement: true,
         preserveHistory: true
       });
@@ -241,8 +244,14 @@ export class TiroSessionManager {
     }
   }
 
-  public setDesiredSelector(selector: string | null): void {
+  public setDesiredSelector(
+    selector: string | null,
+    fingerprint?: TiroElementFingerprint | null
+  ): void {
     this.desiredSelector = selector ? selector.trim() : null;
+    if (fingerprint !== undefined) {
+      this.desiredFingerprint = fingerprint ?? null;
+    }
     if (this.desiredSelector) {
       this.scheduleReattach(300);
     }
@@ -340,6 +349,7 @@ export class TiroSessionManager {
   public sendPreloadCommand(payload: {
     action: string;
     selector?: string;
+    fingerprint?: TiroElementFingerprint | null;
     latencySampleMs?: number;
   }): TiroViewStateSnapshot {
     const view = this.ensureView();
@@ -356,10 +366,18 @@ export class TiroSessionManager {
       this.observing = true;
       this.targetSelector = payload.selector;
       this.desiredSelector = payload.selector;
-      outbound = { ...outbound, waitForElement: true };
+      if (payload.fingerprint !== undefined) {
+        this.desiredFingerprint = payload.fingerprint ?? null;
+      }
+      outbound = {
+        ...outbound,
+        fingerprint: payload.fingerprint ?? this.desiredFingerprint,
+        waitForElement: true
+      };
     } else if (payload.action === 'stop-observer') {
       this.observing = false;
       this.desiredSelector = null;
+      this.desiredFingerprint = null;
     }
 
     view.webContents.send('tiro-preload:command', outbound);
@@ -491,7 +509,15 @@ export function registerTiroIpcHandlers(
 
   ipcMain.handle(
     'tiro:command',
-    (_event, payload: { action: string; selector?: string; latencySampleMs?: number }) => {
+    (
+      _event,
+      payload: {
+        action: string;
+        selector?: string;
+        fingerprint?: TiroElementFingerprint | null;
+        latencySampleMs?: number;
+      }
+    ) => {
       const mgr = getManager();
       if (!mgr) return null;
       return mgr.sendPreloadCommand(payload);

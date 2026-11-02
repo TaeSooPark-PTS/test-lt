@@ -7,6 +7,7 @@ export interface CaptionCardItem {
   sequence: number;
   englishText: string;
   koreanText: string | null;
+  detectedLang?: string;
   captionStatus: CaptionStatus;
   translationState: TranslationState;
   extractionLatencyMs?: number;

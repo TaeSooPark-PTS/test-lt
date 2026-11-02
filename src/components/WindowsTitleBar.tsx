@@ -10,6 +10,8 @@ interface WindowsTitleBarProps {
   translationEngine: TranslationEngineId;
   translatorStatus: TranslatorStatus | null;
   onTogglePresentationMode: () => void;
+  onStartBuiltinPresentation: () => void;
+  onOpenReadinessGuide: () => void;
   onToggleCleanMode: () => void;
   onToggleAlwaysOnTop: () => void;
   onMinimize: () => void;
@@ -24,18 +26,22 @@ export const WindowsTitleBar: React.FC<WindowsTitleBarProps> = ({
   translationEngine,
   translatorStatus,
   onTogglePresentationMode,
+  onStartBuiltinPresentation,
+  onOpenReadinessGuide,
   onToggleCleanMode,
   onToggleAlwaysOnTop,
   onMinimize,
   onToggleMaximize,
   onClose
 }) => {
-  const isSidebar = windowState.isPresentationMode;
+  const isPresenting = windowState.isPresentationMode;
+  const isBuiltinDeck = isPresenting && windowState.presentationStageMode === 'builtin-deck';
+  const isExternalSidebar = isPresenting && !isBuiltinDeck;
 
   return (
     <header
       className={`win-titlebar ${cleanMode ? 'win-titlebar-clean' : ''} ${
-        isSidebar ? 'win-titlebar-sidebar' : ''
+        isExternalSidebar ? 'win-titlebar-sidebar' : ''
       }`}
       onDoubleClick={(e) => {
         if ((e.target as HTMLElement).closest('.win-no-drag')) return;
@@ -47,23 +53,33 @@ export const WindowsTitleBar: React.FC<WindowsTitleBarProps> = ({
           ⚡
         </span>
         <span className="win-app-title">
-          {isSidebar ? 'Tiro 실시간 번역 사이드바' : 'Tiro Live Bilingual Caption Workspace'}
+          {isExternalSidebar
+            ? 'Tiro 실시간 번역 사이드바'
+            : isBuiltinDeck
+              ? 'Tiro 내장 슬라이드 + 실시간 다국어 자막 발표'
+              : 'Tiro Live Bilingual Caption Workspace'}
         </span>
         <span
-          className={`win-mode-badge ${isSidebar ? 'win-mode-badge-live' : ''}`}
+          className={`win-mode-badge ${isPresenting ? 'win-mode-badge-live' : ''}`}
           title={
-            isSidebar
-              ? '프로젝터 우측 자막 사이드바 모드 동작 중'
-              : '설정 및 통합 슬라이드 워크스페이스 모드'
+            isBuiltinDeck
+              ? 'PowerPoint 없이 내장 슬라이드 스테이지 + 자막 통합 발표 중'
+              : isExternalSidebar
+                ? '프로젝터 우측 자막 사이드바 모드 동작 중'
+                : '설정 및 통합 슬라이드 워크스페이스 모드'
           }
         >
-          {isSidebar ? 'LIVE 사이드바' : '워크스페이스'}
+          {isBuiltinDeck ? 'LIVE 통합 발표' : isExternalSidebar ? 'LIVE 사이드바' : '워크스페이스'}
         </span>
         {cleanMode && (
           <span className="win-clean-indicator">
             <span className={`status-dot status-dot-${captionStatus.state}`} />
-            {translationEngine === 'local' && translatorStatus?.state === 'ready'
-              ? '오프라인 AI 활성'
+            {translationEngine === 'local'
+              ? translatorStatus?.state === 'ready'
+                ? '로컬 AI 활성'
+                : translatorStatus?.cachedOnDisk
+                  ? '로컬 AI 준비'
+                  : 'AI 모델 다운로드 필요'
               : captionStatus.isMock
                 ? 'Mock'
                 : 'Tiro Live'}
@@ -72,18 +88,47 @@ export const WindowsTitleBar: React.FC<WindowsTitleBarProps> = ({
       </div>
 
       <div className="win-titlebar-actions win-no-drag">
+        {isPresenting ? (
+          <button
+            type="button"
+            className="win-action-pill win-action-pill-stop"
+            onClick={onTogglePresentationMode}
+            data-testid="toggle-presentation-mode"
+            title="발표 모드를 종료하고 기본 워크스페이스 크기로 복귀합니다"
+          >
+            ⏹ 발표 종료
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="win-action-pill win-action-pill-live"
+              onClick={onTogglePresentationMode}
+              data-testid="toggle-presentation-mode"
+              title="프로젝터 우측 자막 사이드바로 전환하고 PowerPoint 슬라이드쇼를 좌측에 자동 배치합니다"
+            >
+              🚀 PPT 발표
+            </button>
+            <button
+              type="button"
+              className="win-action-pill win-action-pill-live"
+              onClick={onStartBuiltinPresentation}
+              data-testid="titlebar-builtin-presentation"
+              title="PowerPoint 없이 프로젝터 전체 화면에 내장 이미지 슬라이드 + 실시간 번역 자막을 함께 송출합니다"
+            >
+              🖼 내장 발표
+            </button>
+          </>
+        )}
+
         <button
           type="button"
-          className={`win-action-pill ${isSidebar ? 'win-action-pill-stop' : 'win-action-pill-live'}`}
-          onClick={onTogglePresentationMode}
-          data-testid="toggle-presentation-mode"
-          title={
-            isSidebar
-              ? '발표 사이드바 모드를 종료하고 기본 워크스페이스 크기로 복귀합니다'
-              : '프로젝터 우측 자막 사이드바로 전환하고 PowerPoint 슬라이드쇼를 좌측에 자동 배치합니다'
-          }
+          className="win-action-pill"
+          onClick={onOpenReadinessGuide}
+          data-testid="open-readiness-guide"
+          title="온라인/오프라인 범위, AI 모델 용량 및 발표 준비 상태를 확인합니다"
         >
-          {isSidebar ? '⏹ 발표 종료' : '🚀 프로젝터 발표'}
+          ❓ 준비 안내
         </button>
 
         <button

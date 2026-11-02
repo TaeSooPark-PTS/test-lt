@@ -1,3 +1,17 @@
+export interface TiroElementFingerprint {
+  primarySelector: string;
+  stableSelector: string | null;
+  tagName: string;
+  ancestryTags: string[];
+  ariaLive: string | null;
+  role: string | null;
+  xRatio: number;
+  yRatio: number;
+  wRatio: number;
+  hRatio: number;
+  isScrollable: boolean;
+}
+
 export interface TiroDomDiagnostics {
   timestamp: number;
   url: string;
@@ -22,6 +36,7 @@ export interface TiroRadarCandidate {
   childBlockCount: number;
   sampleText: string;
   lastUpdatedAt: number;
+  score?: number;
 }
 
 export interface TiroSelectedElementInfo {
@@ -30,6 +45,8 @@ export interface TiroSelectedElementInfo {
   tagSummary: string;
   childElementCount: number;
   sampleText: string;
+  fingerprint?: TiroElementFingerprint | null;
+  autoHealed?: boolean;
 }
 
 export interface TiroObserverTelemetry {
@@ -44,6 +61,8 @@ export interface TiroObserverTelemetry {
   avgLatencyMs: number | null;
   lastSampleText: string;
   waitingForElement?: boolean;
+  selfHealedCount?: number;
+  lastHealMessage?: string;
   errorMessage?: string;
 }
 

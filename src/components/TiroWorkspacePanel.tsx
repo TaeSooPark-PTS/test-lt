@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   TiroDomDiagnostics,
+  TiroElementFingerprint,
   TiroObserverTelemetry,
   TiroRadarCandidate,
   TiroSelectedElementInfo,
@@ -9,9 +10,11 @@ import type {
 
 interface TiroWorkspacePanelProps {
   visible: boolean;
+  modalOverlayOpen?: boolean;
   savedSelector: string | null;
+  hasSavedFingerprint?: boolean;
   onHideToSlides: () => void;
-  onSelectTargetSelector: (selector: string) => void;
+  onSelectTargetSelector: (selector: string, fingerprint?: TiroElementFingerprint | null) => void;
   onStopObserving: () => void;
   diagnostics: TiroDomDiagnostics | null;
   radarCandidates: TiroRadarCandidate[];
@@ -22,7 +25,9 @@ interface TiroWorkspacePanelProps {
 
 export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
   visible,
+  modalOverlayOpen = false,
   savedSelector,
+  hasSavedFingerprint = false,
   onHideToSlides,
   onSelectTargetSelector,
   onStopObserving,
@@ -64,10 +69,14 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
   const syncBounds = useCallback(() => {
     const api = window.electronAPI?.tiro;
     if (!api) return;
-    if (!visible || !hostRef.current) {
+    if (!visible || modalOverlayOpen || !hostRef.current) {
+      if (modalOverlayOpen) {
+        void api.setVisible(false);
+      }
       void api.setBounds({ x: 0, y: 0, width: 0, height: 0 });
       return;
     }
+    void api.setVisible(true);
     void api.setZoom(1);
     const rect = hostRef.current.getBoundingClientRect();
     void api.setBounds({
@@ -76,7 +85,7 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
       width: rect.width,
       height: rect.height
     });
-  }, [visible]);
+  }, [modalOverlayOpen, visible]);
 
   useEffect(() => {
     syncBounds();
@@ -211,14 +220,21 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
         <div className="tiro-poc-drawer">
           <div className="tiro-guide-strip">
             <span>
-              <strong>연동 순서:</strong> ① 아래 Tiro에 로그인 후 영어 실시간 기록 시작 → ②{' '}
+              <strong>연동 순서:</strong> ① 아래 Tiro에 로그인 후 실시간 기록 시작 → ②{' '}
               <strong>[✨ 자막 영역 자동 연결]</strong> 또는 <strong>[마우스로 영역 선택]</strong> 클릭
-              (최초 1회 설정 시 다음 실행부터 자동 재연결) → ③ 우측 상단{' '}
-              <strong>[🚀 프로젝터 발표]</strong> 클릭
+              (다중 앵커 DOM 지문이 함께 저장되어 Tiro 클래스가 바뀌어도 자동 자가 복구) → ③ 상단{' '}
+              <strong>[🚀 PPT 발표]</strong> 또는 <strong>[🖼 내장 발표]</strong> 클릭
             </span>
             {savedSelector && (
-              <span className="saved-selector-badge" title={`저장된 CSS Selector: ${savedSelector}`}>
-                💾 자동 재연결 저장됨
+              <span
+                className="saved-selector-badge"
+                title={`저장된 CSS Selector: ${savedSelector}${
+                  hasSavedFingerprint ? ' (구조·좌표 다중 앵커 지문 보호됨)' : ''
+                }`}
+              >
+                {hasSavedFingerprint
+                  ? '🛡️ 다중 앵커 자동 재연결 활성'
+                  : '💾 자동 재연결 저장됨'}
               </span>
             )}
           </div>
@@ -228,7 +244,7 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
               type="button"
               className="toolbar-btn toolbar-btn-primary"
               onClick={handleAutoDetect}
-              title="Tiro 화면에서 실시간 자막 영역을 자동으로 탐색하거나 음성 변화 시 즉시 자동 연결합니다"
+              title="해시 클래스에 의존하지 않고 DOM 구조·스크롤·ARIA·실시간 텍스트 스트림을 분석해 자막 영역을 자동 연결합니다"
             >
               ✨ 자막 영역 자동 연결
             </button>
@@ -237,7 +253,7 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
               type="button"
               className={`toolbar-btn ${viewState?.pickerActive ? 'toolbar-btn-active' : ''}`}
               onClick={handleTogglePicker}
-              title="아래 Tiro 화면에서 영어 자막이 올라오는 영역을 마우스로 직접 클릭해 선택합니다"
+              title="아래 Tiro 화면에서 자막이 올라오는 영역을 마우스로 직접 클릭해 선택합니다"
             >
               {viewState?.pickerActive ? '취소 (ESC)' : '🎯 마우스로 자막 영역 선택'}
             </button>
@@ -292,7 +308,7 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
           {/* Live Telemetry & Diagnostics Summary */}
           <div className="tiro-telemetry-grid">
             <div className="tiro-telemetry-card">
-              <div className="tiro-telemetry-title">실시간 자막 수집 상태</div>
+              <div className="tiro-telemetry-title">실시간 자막 수집 및 자가 복구 상태</div>
               <div className="tiro-telemetry-stats">
                 <span>
                   상태:{' '}
@@ -300,7 +316,7 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
                     {telemetry?.observing
                       ? `수신 중 (${telemetry.mode})`
                       : telemetry?.waitingForElement
-                        ? '자막 요소 등장 대기 중 (음성인식 시작 시 자동 연결)'
+                        ? '자막 요소 대기 중 (음성인식 시작 또는 DOM 변경 시 자동 자가 복구)'
                         : '대기 중'}
                   </strong>
                 </span>
@@ -319,7 +335,15 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
                       : '-'}
                   </strong>
                 </span>
+                {Boolean(telemetry?.selfHealedCount) && (
+                  <span className="text-ok">
+                    🛡️ 자가 복구: <strong>{telemetry?.selfHealedCount}회 성공</strong>
+                  </span>
+                )}
               </div>
+              {telemetry?.lastHealMessage && (
+                <div className="tiro-diag-note text-ok">{telemetry.lastHealMessage}</div>
+              )}
               {telemetry?.errorMessage && (
                 <div className="tiro-error-inline">{telemetry.errorMessage}</div>
               )}
@@ -327,7 +351,7 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
 
             {diagnostics && (
               <div className="tiro-telemetry-card">
-                <div className="tiro-telemetry-title">DOM 접근 진단 결과</div>
+                <div className="tiro-telemetry-title">DOM / ShadowRoot / iframe 접근 진단</div>
                 <div className="tiro-telemetry-stats">
                   <span>
                     DOM 접근:{' '}
@@ -337,7 +361,7 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
                   </span>
                   <span>요소: {diagnostics.totalElements}개</span>
                   <span>텍스트 노드: {diagnostics.textBearingElements}개</span>
-                  <span>Canvas: {diagnostics.canvasCount}개</span>
+                  <span>ShadowRoot: {diagnostics.openShadowRootCount}개</span>
                   <span>iframe: {diagnostics.iframeUrls.length}개</span>
                 </div>
                 {diagnostics.notes[0] && (
@@ -351,15 +375,18 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
           {pickedInfo && (
             <div className="tiro-picked-banner">
               <span>
-                선택됨: <code>{pickedInfo.tagSummary}</code> (하위 요소 {pickedInfo.childElementCount}
-                개) — 미리보기: &ldquo;{pickedInfo.sampleText || '(비어 있음)'}&rdquo;
+                {pickedInfo.autoHealed ? '🛡️ 자동 자가 복구됨: ' : '선택됨: '}
+                <code>{pickedInfo.tagSummary}</code> (하위 요소 {pickedInfo.childElementCount}개) —
+                미리보기: &ldquo;{pickedInfo.sampleText || '(비어 있음)'}&rdquo;
               </span>
               <button
                 type="button"
                 className="mini-btn mini-btn-active"
-                onClick={() => onSelectTargetSelector(pickedInfo.selector)}
+                onClick={() =>
+                  onSelectTargetSelector(pickedInfo.selector, pickedInfo.fingerprint ?? null)
+                }
               >
-                이 요소로 감시 시작 및 저장
+                이 요소로 감시 시작 및 지문 저장
               </button>
             </div>
           )}
@@ -368,7 +395,7 @@ export const TiroWorkspacePanel: React.FC<TiroWorkspacePanelProps> = ({
           {radarCandidates.length > 0 && (
             <div className="tiro-radar-list">
               <div className="tiro-telemetry-title">
-                실시간 텍스트 변경 감지 후보 (말하는 동안 변하는 요소)
+                실시간 텍스트 스트림 감지 후보 (말하는 동안 변하는 요소)
               </div>
               {radarCandidates.slice(0, 3).map((cand) => (
                 <div key={cand.selector} className="tiro-radar-item">

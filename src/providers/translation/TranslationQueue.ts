@@ -1,4 +1,4 @@
-import type { TranslationProvider } from './TranslationProvider';
+import type { ProviderTranslateOptions, TranslationProvider } from './TranslationProvider';
 
 export type QueueTaskPriority = 'high' | 'normal';
 
@@ -8,6 +8,7 @@ interface QueueTask {
   sourceLanguage: string;
   targetLanguage: string;
   priority: QueueTaskPriority;
+  options?: ProviderTranslateOptions;
   onStart: (captionId: string) => void;
   onSuccess: (captionId: string, translated: string) => void;
   onError: (captionId: string, errorMessage: string) => void;
@@ -56,6 +57,7 @@ export class TranslationQueue {
       sourceLanguage: task.sourceLanguage ?? 'en',
       targetLanguage: task.targetLanguage ?? 'ko',
       priority,
+      options: task.options,
       onStart: task.onStart,
       onSuccess: task.onSuccess,
       onError: task.onError
@@ -97,7 +99,13 @@ export class TranslationQueue {
     task.onStart(task.captionId);
 
     this.provider
-      .translate(task.text, task.sourceLanguage, task.targetLanguage, task.captionId)
+      .translate(
+        task.text,
+        task.sourceLanguage,
+        task.targetLanguage,
+        task.captionId,
+        task.options
+      )
       .then((translated) => {
         if (this.latestTokenByCaption.get(task.captionId) === token) {
           task.onSuccess(task.captionId, translated);

@@ -16,6 +16,7 @@ export interface WindowState {
   isMaximized: boolean;
   isAlwaysOnTop: boolean;
   isPresentationMode: boolean;
+  presentationStageMode?: 'none' | 'external-ppt' | 'builtin-deck';
   currentDisplayId: number;
 }
 
@@ -46,6 +47,7 @@ const tiroAPI = {
   sendCommand: (payload: {
     action: string;
     selector?: string;
+    fingerprint?: unknown;
     latencySampleMs?: number;
     waitForElement?: boolean;
     preserveHistory?: boolean;
@@ -96,8 +98,11 @@ const settingsAPI = {
 const translatorAPI = {
   getStatus: () => ipcRenderer.invoke('translator:get-status'),
   prepare: () => ipcRenderer.invoke('translator:prepare'),
-  translate: (text: string, captionId?: string) =>
-    ipcRenderer.invoke('translator:translate', text, captionId),
+  translate: (
+    text: string,
+    captionId?: string,
+    options?: { srcLang?: string; tgtLang?: string; isInterim?: boolean }
+  ) => ipcRenderer.invoke('translator:translate', text, captionId, options),
   cancelPending: () => ipcRenderer.invoke('translator:cancel-pending'),
   onStatus: (callback: (status: unknown) => void): (() => void) => {
     const listener = (_ev: Electron.IpcRendererEvent, s: unknown) => callback(s);
@@ -121,7 +126,12 @@ const windowControlsAPI = {
 
 const captionsAPI = {
   exportFile: (req: { format: string; content: string; suggestedName: string }) =>
-    ipcRenderer.invoke('captions:export-file', req)
+    ipcRenderer.invoke('captions:export-file', req),
+  saveSession: (input: unknown) => ipcRenderer.invoke('captions:save-session', input),
+  listSessions: () => ipcRenderer.invoke('captions:list-sessions'),
+  loadSession: (sessionId: string) => ipcRenderer.invoke('captions:load-session', sessionId),
+  deleteSession: (sessionId: string) => ipcRenderer.invoke('captions:delete-session', sessionId),
+  openSessionsDir: () => ipcRenderer.invoke('captions:open-sessions-dir')
 };
 
 const electronAPI = {

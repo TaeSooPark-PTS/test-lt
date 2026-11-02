@@ -1,4 +1,5 @@
 import { ipcRenderer } from 'electron';
+import type { TiroElementFingerprint } from './tiroDomMatcher';
 
 interface TrackedUtterance {
   id: string;
@@ -13,12 +14,28 @@ interface RadarEntry {
   selector: string;
   tagSummary: string;
   mutationCount: number;
+  progressiveCount: number;
   sampleText: string;
   lastUpdatedAt: number;
 }
 
 const COALESCE_MS = 35;
 const FINALIZE_QUIET_MS = 1100;
+const FINALIZE_QUIET_PUNCTUATED_MS = 520;
+
+const VOLATILE_CLASS_PATTERNS: readonly RegExp[] = [
+  /^css-[a-z0-9]{4,}$/i,
+  /^sc-[a-zA-Z0-9_-]{4,}$/,
+  /^_[a-zA-Z0-9]+_[a-z0-9]{4,}(?:_\d+)?$/,
+  /^[a-zA-Z0-9_-]+__[a-zA-Z0-9_-]+___[A-Za-z0-9+/=_]{4,}$/,
+  /^jsx-\d+$/,
+  /^svelte-[a-z0-9]{4,}$/i,
+  /^[a-f0-9]{7,}$/i,
+  /[\[\]:/]/
+];
+
+const CLOCK_OR_COUNTER_RE =
+  /^(?:\d{1,2}:\d{2}(?::\d{2})?|\d+\s*\/\s*\d+|\d+%|[\d\s:./-]+)$/;
 
 function isAllowedInspectionHost(): boolean {
   const { protocol, hostname } = window.location;
@@ -48,21 +65,103 @@ function normalizeCaptionText(raw: string | null | undefined): string {
   return raw.replace(/\s+/g, ' ').trim();
 }
 
+function isClockOrCounterText(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return true;
+  if (CLOCK_OR_COUNTER_RE.test(trimmed)) return true;
+  const stripped = trimmed.replace(/\b(?:REC|LIVE|녹음|진행)\b/gi, '').trim();
+  if (stripped && CLOCK_OR_COUNTER_RE.test(stripped)) return true;
+  return false;
+}
+
+function filterStableClasses(classes: readonly string[]): string[] {
+  const result: string[] = [];
+  for (const raw of classes) {
+    const cls = raw.trim();
+    if (!cls || cls.length < 3 || cls.length > 36) continue;
+    if (VOLATILE_CLASS_PATTERNS.some((re) => re.test(cls))) continue;
+    if (/[-_][a-z0-9]{5,}$/i.test(cls) && /\d/.test(cls.slice(-5))) continue;
+    result.push(cls);
+  }
+  return result.slice(0, 2);
+}
+
+/**
+ * Traverses document, open ShadowRoots, and accessible same-origin iframes so component
+ * encapsulation updates in Tiro never hide the transcript DOM from discovery or observation.
+ */
+function collectSearchRoots(): Array<Document | ShadowRoot> {
+  const roots: Array<Document | ShadowRoot> = [document];
+  const queue: Array<Document | ShadowRoot> = [document];
+
+  while (queue.length > 0 && roots.length < 24) {
+    const current = queue.shift()!;
+    const elements = Array.from(current.querySelectorAll('*'));
+    for (const el of elements) {
+      const shadow = (el as HTMLElement).shadowRoot;
+      if (shadow && !roots.includes(shadow)) {
+        roots.push(shadow);
+        queue.push(shadow);
+      }
+      if (el.tagName === 'IFRAME') {
+        try {
+          const subDoc = (el as HTMLIFrameElement).contentDocument;
+          if (subDoc && subDoc.body && !roots.includes(subDoc)) {
+            roots.push(subDoc);
+            queue.push(subDoc);
+          }
+        } catch {
+          // Cross-origin iframe — safely ignored
+        }
+      }
+    }
+  }
+  return roots;
+}
+
+function queryDeep(selector: string): Element | null {
+  if (!selector) return null;
+  try {
+    const direct = document.querySelector(selector);
+    if (direct) return direct;
+  } catch {
+    return null;
+  }
+
+  for (const root of collectSearchRoots()) {
+    if (root === document) continue;
+    try {
+      const found = root.querySelector(selector);
+      if (found) return found;
+    } catch {
+      // ignore invalid selector in sub-root
+    }
+  }
+  return null;
+}
+
+function isElementConnectedDeep(el: Element | null): boolean {
+  return Boolean(el && el.isConnected);
+}
+
 function summarizeElement(el: Element): string {
   const tag = el.tagName.toLowerCase();
   const idPart = el.id ? `#${el.id}` : '';
   const testId = el.getAttribute('data-testid');
   const role = el.getAttribute('role');
-  const classes = Array.from(el.classList)
-    .filter((c) => c && c.length < 32)
-    .slice(0, 2)
-    .map((c) => `.${c}`)
-    .join('');
+  const stableClasses = filterStableClasses(Array.from(el.classList));
+  const fallbackClasses =
+    stableClasses.length > 0
+      ? stableClasses
+      : Array.from(el.classList)
+          .filter((c) => c && c.length < 32)
+          .slice(0, 2);
+  const classStr = fallbackClasses.map((c) => `.${c}`).join('');
   const attrs = [
     testId ? `[data-testid="${testId}"]` : '',
     role ? `[role="${role}"]` : ''
   ].join('');
-  return `${tag}${idPart}${classes}${attrs}`;
+  return `${tag}${idPart}${classStr}${attrs}`;
 }
 
 function cssEscapeIdent(value: string): string {
@@ -72,8 +171,47 @@ function cssEscapeIdent(value: string): string {
   return value.replace(/([^a-zA-Z0-9_-])/g, '\\$1');
 }
 
+function computeStableSelector(target: Element): string | null {
+  const rootNode = target.getRootNode() as Document | ShadowRoot;
+  const queryRoot = 'querySelectorAll' in rootNode ? rootNode : document;
+
+  if (target.id && !/\d{5,}/.test(target.id)) {
+    const idSel = `#${cssEscapeIdent(target.id)}`;
+    if (queryRoot.querySelectorAll(idSel).length === 1) return idSel;
+  }
+
+  const testId = target.getAttribute('data-testid');
+  if (testId) {
+    const sel = `${target.tagName.toLowerCase()}[data-testid="${cssEscapeIdent(testId)}"]`;
+    if (queryRoot.querySelectorAll(sel).length === 1) return sel;
+  }
+
+  const ariaLive = target.getAttribute('aria-live');
+  if (ariaLive) {
+    const sel = `${target.tagName.toLowerCase()}[aria-live="${cssEscapeIdent(ariaLive)}"]`;
+    if (queryRoot.querySelectorAll(sel).length === 1) return sel;
+  }
+
+  const role = target.getAttribute('role');
+  if (role === 'log' || role === 'feed') {
+    const sel = `${target.tagName.toLowerCase()}[role="${cssEscapeIdent(role)}"]`;
+    if (queryRoot.querySelectorAll(sel).length === 1) return sel;
+  }
+
+  const stableClasses = filterStableClasses(Array.from(target.classList));
+  if (stableClasses.length > 0) {
+    const sel = `${target.tagName.toLowerCase()}.${stableClasses.map(cssEscapeIdent).join('.')}`;
+    if (queryRoot.querySelectorAll(sel).length === 1) return sel;
+  }
+
+  return null;
+}
+
 function computeSelector(target: Element): string {
   if (target === document.body) return 'body';
+  const stable = computeStableSelector(target);
+  if (stable) return stable;
+
   if (target.id) {
     const escapedId = `#${cssEscapeIdent(target.id)}`;
     if (document.querySelectorAll(escapedId).length === 1) {
@@ -85,21 +223,15 @@ function computeSelector(target: Element): string {
   let current: Element | null = target;
 
   while (current && current !== document.body && current !== document.documentElement) {
-    const testId = current.getAttribute('data-testid');
-    if (testId) {
-      const candidate = `${current.tagName.toLowerCase()}[data-testid="${cssEscapeIdent(testId)}"]`;
-      parts.unshift(candidate);
+    const currentStable = computeStableSelector(current);
+    if (currentStable) {
+      parts.unshift(currentStable);
       const joined = parts.join(' > ');
       if (document.querySelectorAll(joined).length === 1) {
         return joined;
       }
       current = current.parentElement;
       continue;
-    }
-
-    if (current.id) {
-      parts.unshift(`#${cssEscapeIdent(current.id)}`);
-      return parts.join(' > ');
     }
 
     const tag = current.tagName.toLowerCase();
@@ -129,6 +261,152 @@ function computeSelector(target: Element): string {
   }
 
   return parts.length > 0 ? parts.join(' > ') : 'body';
+}
+
+function computeAncestryTags(el: Element): string[] {
+  const tags: string[] = [];
+  let cur: Element | null = el.parentElement;
+  while (cur && cur !== document.documentElement && tags.length < 6) {
+    tags.unshift(cur.tagName.toLowerCase());
+    cur = cur.parentElement;
+  }
+  return tags;
+}
+
+function checkIsScrollable(el: Element): boolean {
+  try {
+    const style = window.getComputedStyle(el);
+    return (
+      style.overflowY === 'auto' ||
+      style.overflowY === 'scroll' ||
+      el.scrollHeight > el.clientHeight + 24
+    );
+  } catch {
+    return false;
+  }
+}
+
+function buildFingerprint(el: Element): TiroElementFingerprint {
+  const rect = el.getBoundingClientRect();
+  const vw = Math.max(1, window.innerWidth);
+  const vh = Math.max(1, window.innerHeight);
+
+  return {
+    primarySelector: computeSelector(el),
+    stableSelector: computeStableSelector(el),
+    tagName: el.tagName.toLowerCase(),
+    ancestryTags: computeAncestryTags(el),
+    ariaLive: el.getAttribute('aria-live'),
+    role: el.getAttribute('role'),
+    xRatio: Number((rect.left / vw).toFixed(3)),
+    yRatio: Number((rect.top / vh).toFixed(3)),
+    wRatio: Number((rect.width / vw).toFixed(3)),
+    hRatio: Number((rect.height / vh).toFixed(3)),
+    isScrollable: checkIsScrollable(el)
+  };
+}
+
+function scoreFingerprintSimilarity(
+  saved: TiroElementFingerprint,
+  candidate: TiroElementFingerprint
+): number {
+  let score = 0;
+  if (saved.tagName.toLowerCase() === candidate.tagName.toLowerCase()) score += 0.2;
+  if (saved.ariaLive && saved.ariaLive === candidate.ariaLive) score += 0.2;
+  if (saved.role && saved.role === candidate.role) score += 0.15;
+  if (saved.isScrollable === candidate.isScrollable) score += 0.1;
+
+  const savedTail = saved.ancestryTags.slice(-4);
+  const candTail = candidate.ancestryTags.slice(-4);
+  if (savedTail.length > 0 && candTail.length > 0) {
+    const set = new Set(savedTail);
+    const matches = candTail.filter((t) => set.has(t)).length;
+    score += 0.2 * (matches / Math.max(savedTail.length, candTail.length));
+  }
+
+  const dx = Math.abs(saved.xRatio - candidate.xRatio);
+  const dy = Math.abs(saved.yRatio - candidate.yRatio);
+  const dw = Math.abs(saved.wRatio - candidate.wRatio);
+  const dh = Math.abs(saved.hRatio - candidate.hRatio);
+  const spatialDist = (dx + dy + dw + dh) / 4;
+  score += 0.35 * Math.max(0, 1 - spatialDist * 2.2);
+
+  return Math.min(1, score);
+}
+
+function scoreElementAsTranscript(el: Element): number {
+  if (el.closest('[data-tiro-poc-overlay="true"]')) return -100;
+  if (el.closest('nav, header, footer, button, [role="navigation"], [role="menubar"], [role="dialog"]')) {
+    return -100;
+  }
+  const tag = el.tagName.toUpperCase();
+  if (['NAV', 'HEADER', 'FOOTER', 'BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'ASIDE', 'SCRIPT', 'STYLE', 'SVG'].includes(tag)) {
+    return -100;
+  }
+
+  const rect = el.getBoundingClientRect();
+  if (rect.width < 120 || rect.height < 24) return -100;
+
+  const text = normalizeCaptionText((el as HTMLElement).innerText || el.textContent);
+  const isClock = text.length > 0 && isClockOrCounterText(text);
+  if (isClock && text.length < 32) return -80;
+
+  let score = 0;
+
+  const radar = radarMap.get(el);
+  if (radar) {
+    score += Math.min(45, radar.mutationCount * 9 + radar.progressiveCount * 8);
+  }
+
+  const ariaLive = el.getAttribute('aria-live');
+  if (ariaLive === 'polite' || ariaLive === 'assertive') score += 32;
+
+  const role = el.getAttribute('role');
+  if (role === 'log' || role === 'feed') score += 28;
+  else if (role === 'region' || role === 'status') score += 10;
+
+  const hintSource = `${el.id} ${el.getAttribute('data-testid') ?? ''} ${el.className?.toString() ?? ''}`.toLowerCase();
+  if (/(transcript|utterance|caption|subtitle|stt|speech|script)/.test(hintSource)) {
+    score += 26;
+  }
+
+  const vw = Math.max(1, window.innerWidth);
+  const vh = Math.max(1, window.innerHeight);
+  const areaRatio = (rect.width * rect.height) / (vw * vh);
+  if (checkIsScrollable(el)) score += 16;
+  if (areaRatio >= 0.08 && areaRatio <= 0.92) score += 14;
+  else if (areaRatio > 0.96) score -= 18;
+
+  // Count homogeneous child blocks carrying natural sentence text
+  const children = Array.from(el.children).filter(
+    (c) => !c.hasAttribute('data-tiro-poc-overlay')
+  );
+  if (children.length >= 2 && children.length <= 400) {
+    const tagCounts = new Map<string, number>();
+    let sentenceChildren = 0;
+    for (const child of children.slice(-24)) {
+      const cText = normalizeCaptionText((child as HTMLElement).innerText || child.textContent);
+      if (cText.length >= 8 && !isClockOrCounterText(cText)) {
+        tagCounts.set(child.tagName, (tagCounts.get(child.tagName) ?? 0) + 1);
+        if (/[\s.?!,。？！]/.test(cText)) {
+          sentenceChildren += 1;
+        }
+      }
+    }
+    const maxSameTag = Math.max(0, ...tagCounts.values());
+    if (maxSameTag >= 2) {
+      score += Math.min(24, maxSameTag * 4);
+    }
+    if (sentenceChildren >= 1) {
+      score += Math.min(22, sentenceChildren * 5);
+    }
+  }
+
+  if (text.length >= 24 && !isClock) {
+    score += 10;
+  }
+
+  return score;
 }
 
 function isContinuationText(prevText: string, nextText: string): boolean {
@@ -171,20 +449,25 @@ function collectDomDiagnostics() {
     };
   }
 
-  const allElements = Array.from(document.querySelectorAll('*'));
+  const roots = collectSearchRoots();
+  let totalElements = 0;
   let textBearingCount = 0;
   let openShadowCount = 0;
 
-  for (const el of allElements) {
-    if ((el as HTMLElement).shadowRoot) {
-      openShadowCount += 1;
-    }
-    const directText = Array.from(el.childNodes)
-      .filter((n) => n.nodeType === Node.TEXT_NODE)
-      .map((n) => (n.textContent || '').trim())
-      .join('');
-    if (directText.length > 0) {
-      textBearingCount += 1;
+  for (const root of roots) {
+    const allElements = Array.from(root.querySelectorAll('*'));
+    totalElements += allElements.length;
+    for (const el of allElements) {
+      if ((el as HTMLElement).shadowRoot) {
+        openShadowCount += 1;
+      }
+      const directText = Array.from(el.childNodes)
+        .filter((n) => n.nodeType === Node.TEXT_NODE)
+        .map((n) => (n.textContent || '').trim())
+        .join('');
+      if (directText.length > 0) {
+        textBearingCount += 1;
+      }
     }
   }
 
@@ -193,7 +476,7 @@ function collectDomDiagnostics() {
     (f) => f.getAttribute('src') || '(inline/about:blank)'
   );
   const ariaLive = Array.from(
-    document.querySelectorAll('[aria-live], [role="log"], [role="status"]')
+    document.querySelectorAll('[aria-live], [role="log"], [role="feed"], [role="status"]')
   )
     .slice(0, 10)
     .map((el) => summarizeElement(el));
@@ -202,7 +485,7 @@ function collectDomDiagnostics() {
   if (loginOrAuth) {
     notes.push('현재 로그인 화면입니다. Tiro 계정으로 로그인한 뒤 실시간 음성 인식 세션을 시작하세요.');
   } else {
-    notes.push('tiro.ooo 워크스페이스 DOM 접근이 가능합니다.');
+    notes.push('tiro.ooo 워크스페이스 DOM(Shadow DOM·동일 출처 iframe 포함) 접근이 가능합니다.');
   }
   if (canvases > 0) {
     notes.push(`페이지 내 <canvas> 요소가 ${canvases}개 존재합니다. 자막이 DOM 텍스트인지 Radar로 확인하세요.`);
@@ -218,7 +501,7 @@ function collectDomDiagnostics() {
     isAllowedHost: true,
     isLoginOrAuthPage: loginOrAuth,
     domAccessible: Boolean(document.body),
-    totalElements: allElements.length,
+    totalElements,
     textBearingElements: textBearingCount,
     canvasCount: canvases,
     iframeUrls: iframes,
@@ -229,11 +512,12 @@ function collectDomDiagnostics() {
 }
 
 // ============================================================================
-// 2. Mutation Radar (Zero-Assumption Live Caption Element Discovery)
+// 2. Mutation Radar & Adaptive Structural Discovery
 // ============================================================================
 let radarObserver: MutationObserver | null = null;
 let radarFlushTimer: ReturnType<typeof setInterval> | null = null;
 let autoAttachOnRadar = false;
+let autoAttachIsSelfHeal = false;
 const radarMap = new Map<Element, RadarEntry>();
 
 function resolveMeaningfulContainer(node: Node): Element | null {
@@ -241,19 +525,17 @@ function resolveMeaningfulContainer(node: Node): Element | null {
     node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
   if (!el) return null;
 
-  // Ignore our own inspector overlay if present
   if (el.closest('[data-tiro-poc-overlay="true"]')) return null;
+  if (el.closest('nav, header, footer, button, [role="navigation"]')) return null;
 
-  // Climb from inline formatting tags (span, b, i, font) to block/container parent
   while (
     el.parentElement &&
     el.parentElement !== document.body &&
-    ['SPAN', 'STRONG', 'EM', 'B', 'I', 'SMALL', 'MARK'].includes(el.tagName)
+    ['SPAN', 'STRONG', 'EM', 'B', 'I', 'SMALL', 'MARK', 'FONT', 'TIME'].includes(el.tagName)
   ) {
     el = el.parentElement;
   }
 
-  // If this block is one item inside a repeating transcript list, prefer its list container
   if (el.parentElement && el.parentElement !== document.body && el.parentElement.children.length >= 2) {
     return el.parentElement;
   }
@@ -262,31 +544,62 @@ function resolveMeaningfulContainer(node: Node): Element | null {
 }
 
 function flushRadarCandidates(): void {
-  const sortedEntries = Array.from(radarMap.values())
-    .filter((entry) => document.contains(entry.el) && entry.sampleText.length > 0)
-    .sort((a, b) => b.mutationCount - a.mutationCount || b.lastUpdatedAt - a.lastUpdatedAt);
+  const scoredEntries = Array.from(radarMap.values())
+    .filter(
+      (entry) =>
+        isElementConnectedDeep(entry.el) &&
+        entry.sampleText.length > 0 &&
+        !isClockOrCounterText(entry.sampleText)
+    )
+    .map((entry) => ({
+      entry,
+      score: scoreElementAsTranscript(entry.el)
+    }))
+    .filter((item) => item.score > -50)
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.entry.progressiveCount - a.entry.progressiveCount ||
+        b.entry.mutationCount - a.entry.mutationCount ||
+        b.entry.lastUpdatedAt - a.entry.lastUpdatedAt
+    );
 
-  if (autoAttachOnRadar && sortedEntries.length > 0) {
-    const best = sortedEntries[0];
-    if (best.mutationCount >= 2 || best.sampleText.length >= 12) {
+  if (autoAttachOnRadar && scoredEntries.length > 0) {
+    const top = scoredEntries[0];
+    const e = top.entry;
+    if (
+      (e.progressiveCount >= 1 && e.sampleText.length >= 8) ||
+      e.mutationCount >= 2 ||
+      (top.score >= 30 && e.sampleText.length >= 12)
+    ) {
+      const wasSelfHeal = autoAttachIsSelfHeal;
       autoAttachOnRadar = false;
-      const info = buildPickedInfo(best.el);
+      autoAttachIsSelfHeal = false;
+      const info = buildPickedInfo(e.el, wasSelfHeal);
+      savedFingerprint = info.fingerprint ?? null;
+      if (wasSelfHeal) {
+        telemetry.selfHealedCount += 1;
+        telemetry.lastHealMessage = `Tiro DOM 변경 감지 → 자막 영역 자동 복구 완료 (${info.tagSummary})`;
+      }
       ipcRenderer.send('tiro-preload:element-picked', info);
-      startCaptionObserver(info.selector, { waitForElement: true, preserveHistory: true });
+      startCaptionObserver(info.selector, {
+        waitForElement: true,
+        preserveHistory: true,
+        fingerprint: info.fingerprint
+      });
       stopMutationRadar();
     }
   }
 
-  const candidates = sortedEntries
-    .slice(0, 6)
-    .map((entry) => ({
-      selector: computeSelector(entry.el),
-      tagSummary: entry.tagSummary,
-      mutationCount: entry.mutationCount,
-      childBlockCount: entry.el.children.length,
-      sampleText: entry.sampleText.slice(-160),
-      lastUpdatedAt: entry.lastUpdatedAt
-    }));
+  const candidates = scoredEntries.slice(0, 6).map(({ entry, score }) => ({
+    selector: computeSelector(entry.el),
+    tagSummary: entry.tagSummary,
+    mutationCount: entry.mutationCount,
+    childBlockCount: entry.el.children.length,
+    sampleText: entry.sampleText.slice(-160),
+    lastUpdatedAt: entry.lastUpdatedAt,
+    score
+  }));
 
   ipcRenderer.send('tiro-preload:radar-candidates', candidates);
 }
@@ -302,11 +615,14 @@ function startMutationRadar(): void {
       const container = resolveMeaningfulContainer(m.target);
       if (!container) continue;
       const text = normalizeCaptionText((container as HTMLElement).innerText || container.textContent);
-      if (!text) continue;
+      if (!text || isClockOrCounterText(text)) continue;
 
       const existing = radarMap.get(container);
       if (existing) {
         if (existing.sampleText !== text) {
+          if (isContinuationText(existing.sampleText, text) || text.length > existing.sampleText.length) {
+            existing.progressiveCount += 1;
+          }
           existing.mutationCount += 1;
           existing.sampleText = text;
           existing.lastUpdatedAt = now;
@@ -317,6 +633,7 @@ function startMutationRadar(): void {
           selector: computeSelector(container),
           tagSummary: summarizeElement(container),
           mutationCount: 1,
+          progressiveCount: 0,
           sampleText: text,
           lastUpdatedAt: now
         });
@@ -324,17 +641,23 @@ function startMutationRadar(): void {
     }
   });
 
-  radarObserver.observe(document.body, {
-    subtree: true,
-    childList: true,
-    characterData: true
-  });
+  for (const root of collectSearchRoots()) {
+    const targetNode = root instanceof Document ? root.body : root;
+    if (targetNode) {
+      radarObserver.observe(targetNode, {
+        subtree: true,
+        childList: true,
+        characterData: true
+      });
+    }
+  }
 
-  radarFlushTimer = setInterval(flushRadarCandidates, 600);
+  radarFlushTimer = setInterval(flushRadarCandidates, 500);
 }
 
 function stopMutationRadar(): void {
   autoAttachOnRadar = false;
+  autoAttachIsSelfHeal = false;
   if (radarObserver) {
     radarObserver.disconnect();
     radarObserver = null;
@@ -345,6 +668,30 @@ function stopMutationRadar(): void {
   }
 }
 
+/**
+ * Evaluates all DOM containers across document + ShadowRoots + same-origin iframes using
+ * multi-signal structural & behavioral scoring (not brittle class-name assumptions alone).
+ */
+function findBestStructuralTranscriptCandidate(): { el: Element; score: number } | null {
+  let bestEl: Element | null = null;
+  let bestScore = 22; // minimum confidence threshold
+
+  for (const root of collectSearchRoots()) {
+    const candidates = Array.from(
+      root.querySelectorAll('div, section, main, article, ul, ol, [aria-live], [role="log"], [role="feed"]')
+    );
+    for (const el of candidates) {
+      const score = scoreElementAsTranscript(el);
+      if (score > bestScore) {
+        bestScore = score;
+        bestEl = el;
+      }
+    }
+  }
+
+  return bestEl ? { el: bestEl, score: bestScore } : null;
+}
+
 function autoDetectCaptionTarget(): void {
   if (!isAllowedInspectionHost() || !document.body) {
     telemetry.errorMessage = 'Tiro 워크스페이스 화면에서 자동 탐색을 실행해 주세요.';
@@ -352,52 +699,50 @@ function autoDetectCaptionTarget(): void {
     return;
   }
 
-  // 1. Prefer already-observed active mutation radar entry if available
+  // 1. Prefer active speech-stream mutation radar candidate if already observed
   const radarBest = Array.from(radarMap.values())
-    .filter((entry) => document.contains(entry.el) && entry.sampleText.length > 0)
-    .sort((a, b) => b.mutationCount - a.mutationCount || b.lastUpdatedAt - a.lastUpdatedAt)[0];
+    .filter(
+      (entry) =>
+        isElementConnectedDeep(entry.el) &&
+        entry.sampleText.length > 0 &&
+        !isClockOrCounterText(entry.sampleText)
+    )
+    .sort(
+      (a, b) =>
+        scoreElementAsTranscript(b.el) - scoreElementAsTranscript(a.el) ||
+        b.mutationCount - a.mutationCount
+    )[0];
 
   if (radarBest) {
-    const info = buildPickedInfo(radarBest.el);
+    const info = buildPickedInfo(radarBest.el, false);
+    savedFingerprint = info.fingerprint ?? null;
     ipcRenderer.send('tiro-preload:element-picked', info);
-    startCaptionObserver(info.selector, { waitForElement: true, preserveHistory: true });
+    startCaptionObserver(info.selector, {
+      waitForElement: true,
+      preserveHistory: true,
+      fingerprint: info.fingerprint
+    });
     return;
   }
 
-  // 2. Semantic live-region / transcript container heuristics
-  const heuristicSelectors = [
-    '[data-testid*="transcript" i]',
-    '[data-testid*="caption" i]',
-    '[data-testid*="utterance" i]',
-    '[aria-live="polite"]',
-    '[aria-live="assertive"]',
-    '[role="log"]',
-    '[class*="transcript" i]',
-    '[class*="utterance" i]',
-    '[class*="caption" i]'
-  ];
-
-  for (const query of heuristicSelectors) {
-    const matches = Array.from(document.querySelectorAll(query)).filter((el) => {
-      if (el.closest('[data-tiro-poc-overlay="true"]')) return false;
-      const rect = el.getBoundingClientRect();
-      return rect.width >= 120 && rect.height >= 24;
+  // 2. Multi-signal structural + semantic scoring across the entire DOM tree
+  const structuralBest = findBestStructuralTranscriptCandidate();
+  if (structuralBest) {
+    const info = buildPickedInfo(structuralBest.el, false);
+    savedFingerprint = info.fingerprint ?? null;
+    ipcRenderer.send('tiro-preload:element-picked', info);
+    startCaptionObserver(info.selector, {
+      waitForElement: true,
+      preserveHistory: true,
+      fingerprint: info.fingerprint
     });
-    const withText = matches.find(
-      (el) => normalizeCaptionText((el as HTMLElement).innerText || el.textContent).length > 0
-    );
-    const chosen = withText ?? matches[0];
-    if (chosen) {
-      const info = buildPickedInfo(chosen);
-      ipcRenderer.send('tiro-preload:element-picked', info);
-      startCaptionObserver(info.selector, { waitForElement: true, preserveHistory: true });
-      return;
-    }
+    return;
   }
 
-  // 3. Fallback: arm Mutation Radar in auto-attach mode so as soon as speech text mutates, we lock onto it
+  // 3. Fallback: arm Speech-Stream Mutation Radar in auto-attach mode
   startMutationRadar();
   autoAttachOnRadar = true;
+  autoAttachIsSelfHeal = false;
   telemetry.waitingForElement = true;
   telemetry.errorMessage = undefined;
   sendTelemetry();
@@ -483,16 +828,19 @@ function handlePickerMouseMove(e: MouseEvent): void {
   }
 }
 
-function buildPickedInfo(el: Element) {
+function buildPickedInfo(el: Element, autoHealed = false) {
   const selector = computeSelector(el);
   const parent =
     el.parentElement && el.parentElement !== document.body ? el.parentElement : null;
+  const fingerprint = buildFingerprint(el);
   return {
     selector,
     parentSelector: parent ? computeSelector(parent) : null,
     tagSummary: summarizeElement(el),
     childElementCount: el.children.length,
-    sampleText: normalizeCaptionText((el as HTMLElement).innerText || el.textContent).slice(0, 240)
+    sampleText: normalizeCaptionText((el as HTMLElement).innerText || el.textContent).slice(0, 240),
+    fingerprint,
+    autoHealed
   };
 }
 
@@ -507,7 +855,8 @@ function handlePickerClick(e: MouseEvent): void {
   if (!target || target.closest('[data-tiro-poc-overlay="true"]')) return;
   lastPickedElement = target;
 
-  const info = buildPickedInfo(target);
+  const info = buildPickedInfo(target, false);
+  savedFingerprint = info.fingerprint ?? null;
   ipcRenderer.send('tiro-preload:element-picked', info);
 }
 
@@ -540,16 +889,18 @@ function selectParentOfPicked(): void {
   if (!lastPickedElement || !lastPickedElement.parentElement) return;
   if (lastPickedElement.parentElement === document.documentElement) return;
   lastPickedElement = lastPickedElement.parentElement;
-  const info = buildPickedInfo(lastPickedElement);
+  const info = buildPickedInfo(lastPickedElement, false);
+  savedFingerprint = info.fingerprint ?? null;
   ipcRenderer.send('tiro-preload:element-picked', info);
 }
 
 // ============================================================================
-// 4. MutationObserver Caption Extractor Engine
+// 4. MutationObserver Caption Extractor & Self-Healing Failover Engine
 // ============================================================================
 let captionObserver: MutationObserver | null = null;
 let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
 let activeSelector: string | null = null;
+let savedFingerprint: TiroElementFingerprint | null = null;
 let pendingMutationTimestamp: number | null = null;
 let utteranceIdSeed = 0;
 
@@ -569,6 +920,8 @@ const telemetry = {
   avgLatencyMs: null as number | null,
   lastSampleText: '',
   waitingForElement: false,
+  selfHealedCount: 0,
+  lastHealMessage: undefined as string | undefined,
   errorMessage: undefined as string | undefined
 };
 
@@ -643,16 +996,28 @@ function emitCaptionPayload(
   sendTelemetry();
 }
 
+function hasTerminalSentencePunctuation(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (/\.\.\.$/.test(trimmed)) return false;
+  return /[.?!。？！]["”’')]?$/.test(trimmed);
+}
+
 function scheduleQuietFinalize(utt: TrackedUtterance): void {
   if (utt.finalizeTimer) {
     clearTimeout(utt.finalizeTimer);
   }
+  // Adaptive punctuation-aware quiet window cuts ~600ms off final utterance latency!
+  const quietMs = hasTerminalSentencePunctuation(utt.lastText)
+    ? FINALIZE_QUIET_PUNCTUATED_MS
+    : FINALIZE_QUIET_MS;
+
   utt.finalizeTimer = setTimeout(() => {
     if (!utt.finalized && utt.lastText) {
       const now = Date.now();
       emitCaptionPayload(utt, utt.lastText, true, now);
     }
-  }, FINALIZE_QUIET_MS);
+  }, quietMs);
 }
 
 function resolveUtteranceBlocks(targetEl: Element): {
@@ -660,7 +1025,6 @@ function resolveUtteranceBlocks(targetEl: Element): {
   blocks: Element[];
 } {
   let container = targetEl;
-  // Unwrap single-child wrapper divs up to 3 levels to reach the repeating utterance list
   for (let depth = 0; depth < 3; depth += 1) {
     if (container.children.length === 1) {
       const onlyChild = container.children[0];
@@ -684,11 +1048,56 @@ function resolveUtteranceBlocks(targetEl: Element): {
   return { mode: 'single-node', blocks: [targetEl] };
 }
 
+/**
+ * Attempts to self-heal a broken selector on a live Tiro workspace by matching
+ * saved structural/spatial fingerprint or high-confidence transcript container metrics.
+ */
+function attemptFingerprintOrStructuralHeal(): Element | null {
+  if (isLoginOrAuthLocation() || !document.body) return null;
+
+  // 1. Try stableSelector from savedFingerprint first
+  if (savedFingerprint?.stableSelector) {
+    const stableEl = queryDeep(savedFingerprint.stableSelector);
+    if (stableEl) return stableEl;
+  }
+
+  // 2. Match savedFingerprint spatial + structural similarity combined with transcript score
+  if (savedFingerprint) {
+    let bestMatch: Element | null = null;
+    let bestCombined = 0;
+
+    for (const root of collectSearchRoots()) {
+      const candidates = Array.from(root.querySelectorAll('div, section, main, article, ul, ol'));
+      for (const el of candidates) {
+        const transcriptScore = scoreElementAsTranscript(el);
+        if (transcriptScore < 14) continue;
+        const similarity = scoreFingerprintSimilarity(savedFingerprint, buildFingerprint(el));
+        if (similarity >= 0.68) {
+          const combined = similarity * 100 + transcriptScore;
+          if (combined > bestCombined) {
+            bestCombined = combined;
+            bestMatch = el;
+          }
+        }
+      }
+    }
+    if (bestMatch) return bestMatch;
+  }
+
+  // 3. High-confidence structural transcript container (e.g. semantic live region or active multi-block transcript)
+  const structural = findBestStructuralTranscriptCandidate();
+  if (structural && structural.score >= 38) {
+    return structural.el;
+  }
+
+  return null;
+}
+
 function scanObservedTarget(mutationAt: number, isInitialAttach = false): void {
   if (!activeSelector) return;
-  const targetEl = document.querySelector(activeSelector);
+  const targetEl = queryDeep(activeSelector);
   if (!targetEl) {
-    telemetry.errorMessage = `선택한 요소(${activeSelector})를 현재 DOM에서 찾을 수 없습니다.`;
+    telemetry.errorMessage = `선택한 요소(${activeSelector})가 변경되어 자동 복구를 탐색 중입니다.`;
     sendTelemetry();
     return;
   }
@@ -785,7 +1194,6 @@ function scanObservedTarget(mutationAt: number, isInitialAttach = false): void {
     let tracked = trackedByNode.get(blockEl);
 
     if (!tracked) {
-      // Handle React key-remount of active in-progress block
       if (
         isLastBlock &&
         activeUtterance &&
@@ -796,13 +1204,11 @@ function scanObservedTarget(mutationAt: number, isInitialAttach = false): void {
         tracked = activeUtterance;
         trackedByNode.set(blockEl, tracked);
       } else {
-        // If a brand-new block appeared at the bottom, finalize the previous active utterance immediately
         if (activeUtterance && !activeUtterance.finalized && activeUtterance.lastText) {
           emitCaptionPayload(activeUtterance, activeUtterance.lastText, true, mutationAt);
           emittedAny = true;
         }
 
-        // Prevent virtual-scroll re-emission of already finalized blocks
         if (recentFinalizedTexts.includes(text)) {
           const archived: TrackedUtterance = {
             id: createUtteranceId(),
@@ -830,7 +1236,6 @@ function scanObservedTarget(mutationAt: number, isInitialAttach = false): void {
     }
 
     if (tracked.lastText === text) {
-      // If a newer sibling appeared below an unfinalized block, finalize this older block now
       if (!isLastBlock && !tracked.finalized) {
         emitCaptionPayload(tracked, text, true, mutationAt);
         emittedAny = true;
@@ -868,9 +1273,17 @@ function clearWaitTimers(): void {
 
 function startCaptionObserver(
   selector: string,
-  options: { waitForElement?: boolean; preserveHistory?: boolean } = {}
+  options: {
+    waitForElement?: boolean;
+    preserveHistory?: boolean;
+    fingerprint?: TiroElementFingerprint | null;
+  } = {}
 ): void {
   const preservedFinalized = options.preserveHistory ? [...recentFinalizedTexts] : [];
+  if (options.fingerprint !== undefined) {
+    savedFingerprint = options.fingerprint ?? null;
+  }
+
   stopCaptionObserver();
   clearWaitTimers();
   if (!isAllowedInspectionHost()) {
@@ -879,23 +1292,62 @@ function startCaptionObserver(
     return;
   }
 
-  const targetEl = document.querySelector(selector);
+  const targetEl = queryDeep(selector);
   if (!targetEl) {
     telemetry.observing = false;
     telemetry.targetSelector = selector;
     if (options.waitForElement) {
-      // Tiro is an SPA: the caption container may only appear after login / starting a session.
       telemetry.errorMessage = undefined;
       telemetry.mode = 'idle';
       telemetry.waitingForElement = true;
       sendTelemetry();
+
+      // Arm background Speech-Stream Radar failover while waiting on non-login pages so if Tiro's
+      // CSS selector changed, speaking immediately triggers automatic self-healing!
+      if (!isLoginOrAuthLocation() && !radarObserver) {
+        startMutationRadar();
+        autoAttachOnRadar = true;
+        autoAttachIsSelfHeal = true;
+      }
+
       const startedAt = Date.now();
+      let missTicks = 0;
       waitForElementTimer = setInterval(() => {
-        if (document.querySelector(selector)) {
+        if (queryDeep(selector)) {
           clearWaitTimers();
+          if (autoAttachIsSelfHeal) stopMutationRadar();
           recentFinalizedTexts = preservedFinalized;
-          startCaptionObserver(selector, { preserveHistory: true });
-        } else if (Date.now() - startedAt > 10 * 60 * 1000) {
+          startCaptionObserver(selector, { preserveHistory: true, fingerprint: savedFingerprint });
+          return;
+        }
+
+        missTicks += 1;
+        // After 3 seconds on an active workspace page, attempt structural/fingerprint self-healing
+        if (missTicks >= 3 && !isLoginOrAuthLocation()) {
+          const healedEl = attemptFingerprintOrStructuralHeal();
+          if (healedEl) {
+            clearWaitTimers();
+            if (autoAttachIsSelfHeal) stopMutationRadar();
+            recentFinalizedTexts = preservedFinalized;
+            const info = buildPickedInfo(healedEl, true);
+            savedFingerprint = info.fingerprint ?? null;
+            telemetry.selfHealedCount += 1;
+            telemetry.lastHealMessage = `Tiro 셀렉터 변경 감지 → 구조 핑거프린트로 자동 복구 (${info.tagSummary})`;
+            ipcRenderer.send('tiro-preload:element-picked', info);
+            startCaptionObserver(info.selector, {
+              preserveHistory: true,
+              fingerprint: info.fingerprint
+            });
+            return;
+          }
+          if (!radarObserver) {
+            startMutationRadar();
+            autoAttachOnRadar = true;
+            autoAttachIsSelfHeal = true;
+          }
+        }
+
+        if (Date.now() - startedAt > 10 * 60 * 1000) {
           clearWaitTimers();
           telemetry.waitingForElement = false;
           telemetry.errorMessage = `자막 영역(${selector})을 10분 동안 찾지 못했습니다. Tiro 설정에서 다시 선택하세요.`;
@@ -912,6 +1364,9 @@ function startCaptionObserver(
   activeSelector = selector;
   lastPickedElement = targetEl;
   observedTargetEl = targetEl;
+  if (!savedFingerprint) {
+    savedFingerprint = buildFingerprint(targetEl);
+  }
   trackedByNode = new WeakMap<Element, TrackedUtterance>();
   activeUtterance = null;
   recentFinalizedTexts = preservedFinalized;
@@ -937,20 +1392,24 @@ function startCaptionObserver(
     }, COALESCE_MS);
   });
 
-  // Observe from parentElement (if available) so even if React replaces targetEl's inner wrapper, mutations fire
-  const observeRoot = targetEl.parentElement ?? targetEl;
+  const observeRoot: Node =
+    targetEl.parentElement ?? (targetEl.getRootNode() as Node) ?? targetEl;
   captionObserver.observe(observeRoot, {
     subtree: true,
     childList: true,
     characterData: true
   });
 
-  // Watchdog: if Tiro re-mounts the caption container (new session, route change), re-attach silently.
+  // Watchdog: if Tiro re-mounts or updates DOM structure mid-session, re-attach or self-heal!
   watchdogTimer = setInterval(() => {
     if (!activeSelector) return;
-    const current = document.querySelector(activeSelector);
-    if (!observedTargetEl || !observedTargetEl.isConnected || (current && current !== observedTargetEl)) {
-      startCaptionObserver(activeSelector, { waitForElement: true, preserveHistory: true });
+    const current = queryDeep(activeSelector);
+    if (!observedTargetEl || !isElementConnectedDeep(observedTargetEl) || (current && current !== observedTargetEl)) {
+      startCaptionObserver(activeSelector, {
+        waitForElement: true,
+        preserveHistory: true,
+        fingerprint: savedFingerprint
+      });
     }
   }, 2000);
 
@@ -993,6 +1452,7 @@ ipcRenderer.on(
     payload: {
       action: string;
       selector?: string;
+      fingerprint?: TiroElementFingerprint | null;
       latencySampleMs?: number;
       waitForElement?: boolean;
       preserveHistory?: boolean;
@@ -1032,7 +1492,8 @@ ipcRenderer.on(
         if (payload.selector) {
           startCaptionObserver(payload.selector, {
             waitForElement: Boolean(payload.waitForElement),
-            preserveHistory: Boolean(payload.preserveHistory)
+            preserveHistory: Boolean(payload.preserveHistory),
+            fingerprint: payload.fingerprint
           });
         }
         break;

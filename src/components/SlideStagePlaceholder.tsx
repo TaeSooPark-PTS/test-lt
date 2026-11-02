@@ -9,7 +9,7 @@ interface SampleSlide {
   bullets: string[];
 }
 
-interface LoadedImageSlide {
+export interface LoadedImageSlide {
   name: string;
   url: string;
 }
@@ -17,40 +17,51 @@ interface LoadedImageSlide {
 const SAMPLE_SLIDES: readonly SampleSlide[] = [
   {
     number: 1,
-    tag: 'WINDOWS 10/11 LIVE PRESENTATION WORKFLOW',
-    title: 'Windows 실시간 영·한 이중언어 발표 워크스페이스',
-    subtitle: 'PowerPoint 슬라이드쇼 (좌측 72%) + Tiro & 오프라인 AI 실시간 번역 (우측 28%)',
+    tag: 'WINDOWS 10/11 DUAL PRESENTATION WORKFLOW',
+    title: 'Windows 실시간 다국어 이중언어 발표 워크스페이스',
+    subtitle: 'PowerPoint 자동 정렬 모드 & PowerPoint 없는 내장 슬라이드 통합 발표 모드',
     bullets: [
-      'Windows PowerPoint에서 발표 파일을 열고 [🚀 프로젝터 발표 시작]을 누르면 창 모드 슬라이드쇼가 좌측에 테두리 없이 자동 배치됩니다.',
-      '우측 사이드바에는 Tiro 실시간 영어 자막과 Meta NLLB-200 오프라인 AI 한국어 번역이 동기화되어 표시됩니다.',
-      'PowerPoint 없이 발표할 경우 상단의 [📂 슬라이드 이미지 열기]에 PNG/JPG 슬라이드를 드래그해 즉시 발표할 수 있습니다.'
+      'PowerPoint 설치 PC: [🚀 PPT 프로젝터 발표] 클릭 시 창 모드 슬라이드쇼가 좌측에 테두리 없이 자동 배치됩니다.',
+      'PowerPoint 없는 PC: [📂 슬라이드 이미지 열기]로 PNG/JPG 슬라이드를 불러온 뒤 [🖼 내장 슬라이드 발표]를 누르면 프로젝터 전체 화면에 슬라이드와 실시간 번역 자막을 함께 송출합니다.',
+      '영어·일본어·중국어·스페인어·프랑스어·독일어·베트남어·한국어 발화를 자동 감지하여 실시간 번역합니다.'
     ]
   },
   {
     number: 2,
-    tag: 'OFFLINE AI & ZERO-ASSUMPTION TIRO CAPTURE',
-    title: 'API 키·호출 비용 없는 100% 로컬 AI 번역 엔진',
-    subtitle: 'Electron UtilityProcess + Multi-threaded SIMD ONNX Runtime',
+    tag: 'NETWORK SCOPE · LOCAL AI & ADAPTIVE TIRO CAPTURE',
+    title: '네트워크 필요 범위 안내 및 로컬 AI 다국어 번역',
+    subtitle: '음성 인식은 Tiro 온라인 연결 필요 · 번역 AI는 최초 1회 다운로드 후 로컬 오프라인 구동',
     bullets: [
-      '최초 1회 모델 다운로드 후 인터넷 연결이나 외부 API 비용 없이 로컬에서 영→한 실시간 번역을 수행합니다.',
-      '긴 문장을 말하는 도중에도 중간(Interim) 실시간 선발 번역이 동작하여 청중의 대기 시간을 최소화합니다.',
-      '한 번 선택한 Tiro 자막 컨테이너는 자동 저장되어 앱 재실행 및 세션 전환 시에도 자동으로 재연결됩니다.'
+      '실시간 음성 인식(STT)은 Tiro 웹 서비스를 통해 동작하므로 발표 중 인터넷 및 Tiro 연결이 필요합니다.',
+      'Meta NLLB-200 600M 번역 엔진은 최초 1회 약 680MB 다운로드 후 외부 API 키·비용 없이 로컬에서 오프라인으로 동작합니다.',
+      '다중 앵커 DOM 지문(구조·역할·화면 좌표·텍스트 스트림) 기반 자가 복구로 Tiro 내부 클래스가 바뀌어도 자막 연결을 자동 유지합니다.'
     ]
   },
   {
     number: 3,
-    tag: 'CONFERENCE ROOM & PROJECTOR CONTROLS',
-    title: '회의실 프로젝터 및 다중 모니터 최적화',
-    subtitle: 'Per-Monitor DPI v2 정밀 좌표 보정 · 항상 위 고정 · 자막 기록 내보내기',
+    tag: 'CRASH-SAFE AUTO-SAVE & LONG CONFERENCE VIRTUALIZATION',
+    title: '세션 자동 저장·복구 및 장시간 컨퍼런스 가상화 렌더링',
+    subtitle: 'Per-Monitor DPI v2 정밀 보정 · 실시간 자동 백업 · 가상화 스크롤',
     bullets: [
-      'Windows 디스플레이 배율(100%~200%)을 자동 계산하여 PowerPoint 창과 자막 사이드바를 빈틈없이 정렬합니다.',
-      '발표 종료 후 우측 자막 패널의 [💾 저장] 버튼으로 전체 영·한 대본을 SRT 자막, Markdown, TXT로 즉시 내보낼 수 있습니다.',
-      '키보드 단축키: 좌/우 화살표 또는 PageUp/PageDown (내장 슬라이드 이동), F11 (통합 전체화면 전환)'
+      '발표 중 수집되는 모든 원문·번역 자막은 세션별로 로컬 디스크에 자동 저장되어 앱 재시작 후에도 1클릭으로 복구됩니다.',
+      '수천 문장이 누적되는 장시간 컨퍼런스에서도 가변 높이 목록 가상화(Virtualization)로 메모리와 렌더링 속도를 일정하게 유지합니다.',
+      '단축키: 좌/우 화살표 · PageUp/PageDown · Space (내장 슬라이드 이동), Home/End (처음/끝), F11 (통합 전체화면)'
     ]
   }
 ];
 
 const naturalCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+export function createLoadedSlidesFromFiles(fileList: FileList | File[]): LoadedImageSlide[] {
+  const files = Array.from(fileList)
+    .filter((f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp|svg|bmp)$/i.test(f.name))
+    .sort((a, b) => naturalCollator.compare(a.name, b.name));
+
+  return files.map((file) => ({
+    name: file.name,
+    url: URL.createObjectURL(file)
+  }));
+}
 
 interface SlideStagePlaceholderProps {
   cleanMode: boolean;
@@ -61,12 +72,20 @@ interface SlideStagePlaceholderProps {
   pptRatio: number;
   pptBorderless: boolean;
   layoutNotice: string | null;
+  imageSlides: LoadedImageSlide[];
+  slideIndex: number;
+  onLoadImageFiles: (files: FileList | File[]) => void;
+  onResetDeck: () => void;
+  onChangeSlideIndex: (index: number) => void;
   onChangeProjectorDisplay: (displayId: number | null) => void;
   onChangePptRatio: (ratio: number) => void;
   onTogglePptBorderless: () => void;
   onStartProjectorPresentation: () => void;
+  onStartBuiltinPresentation: () => void;
+  onExitPresentationMode: () => void;
   onArrangePptOnly: () => void;
   onOpenTiroSetup: () => void;
+  onOpenReadinessGuide: () => void;
   onToggleFullScreen: () => void;
   onMoveToDisplay: (displayId: number) => void;
 }
@@ -81,65 +100,43 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
     pptRatio,
     pptBorderless,
     layoutNotice,
+    imageSlides,
+    slideIndex,
+    onLoadImageFiles,
+    onResetDeck,
+    onChangeSlideIndex,
     onChangeProjectorDisplay,
     onChangePptRatio,
     onTogglePptBorderless,
     onStartProjectorPresentation,
+    onStartBuiltinPresentation,
+    onExitPresentationMode,
     onArrangePptOnly,
     onOpenTiroSetup,
+    onOpenReadinessGuide,
     onToggleFullScreen,
     onMoveToDisplay
   }) => {
-    const [slideIndex, setSlideIndex] = useState(0);
     const [zoomPercent, setZoomPercent] = useState(100);
     const [showProjectorSetup, setShowProjectorSetup] = useState(true);
-    const [imageSlides, setImageSlides] = useState<LoadedImageSlide[]>([]);
     const [isDragOver, setIsDragOver] = useState(false);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+    const isBuiltinLive =
+      windowState.isPresentationMode && windowState.presentationStageMode === 'builtin-deck';
     const hasCustomDeck = imageSlides.length > 0;
     const totalSlides = hasCustomDeck ? imageSlides.length : SAMPLE_SLIDES.length;
     const safeIndex = Math.min(slideIndex, Math.max(0, totalSlides - 1));
     const currentSample = SAMPLE_SLIDES[safeIndex] ?? SAMPLE_SLIDES[0];
     const currentImage = hasCustomDeck ? imageSlides[safeIndex] : null;
 
-    const loadFilesAsSlides = useCallback((fileList: FileList | File[]) => {
-      const files = Array.from(fileList)
-        .filter((f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp|svg|bmp)$/i.test(f.name))
-        .sort((a, b) => naturalCollator.compare(a.name, b.name));
-      if (files.length === 0) return;
-
-      setImageSlides((prev) => {
-        prev.forEach((s) => URL.revokeObjectURL(s.url));
-        return files.map((file) => ({
-          name: file.name,
-          url: URL.createObjectURL(file)
-        }));
-      });
-      setSlideIndex(0);
-    }, []);
-
-    useEffect(() => {
-      return () => {
-        imageSlides.forEach((s) => URL.revokeObjectURL(s.url));
-      };
-    }, [imageSlides]);
-
-    const handleResetDeck = useCallback(() => {
-      setImageSlides((prev) => {
-        prev.forEach((s) => URL.revokeObjectURL(s.url));
-        return [];
-      });
-      setSlideIndex(0);
-    }, []);
-
     const goPrev = useCallback(() => {
-      setSlideIndex((prev) => Math.max(0, prev - 1));
-    }, []);
+      onChangeSlideIndex(Math.max(0, safeIndex - 1));
+    }, [onChangeSlideIndex, safeIndex]);
 
     const goNext = useCallback(() => {
-      setSlideIndex((prev) => Math.min(totalSlides - 1, prev + 1));
-    }, [totalSlides]);
+      onChangeSlideIndex(Math.min(totalSlides - 1, safeIndex + 1));
+    }, [onChangeSlideIndex, safeIndex, totalSlides]);
 
     useEffect(() => {
       const handleKeyDown = (event: KeyboardEvent) => {
@@ -160,6 +157,12 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
         } else if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
           event.preventDefault();
           goPrev();
+        } else if (event.key === 'Home') {
+          event.preventDefault();
+          onChangeSlideIndex(0);
+        } else if (event.key === 'End') {
+          event.preventDefault();
+          onChangeSlideIndex(Math.max(0, totalSlides - 1));
         } else if (event.key === 'F11') {
           event.preventDefault();
           onToggleFullScreen();
@@ -168,12 +171,14 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
 
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [goNext, goPrev, onToggleFullScreen]);
+    }, [goNext, goPrev, onChangeSlideIndex, onToggleFullScreen, totalSlides]);
 
     return (
       <section
-        className={`ppt-region ${isDragOver ? 'ppt-region-dragover' : ''}`}
-        aria-label={`PPT 발표 영역 (${pptRatio}%)`}
+        className={`ppt-region ${isDragOver ? 'ppt-region-dragover' : ''} ${
+          isBuiltinLive ? 'builtin-presentation-stage' : ''
+        }`}
+        aria-label={`발표 슬라이드 영역 (${pptRatio}%)`}
         onDragOver={(e) => {
           e.preventDefault();
           setIsDragOver(true);
@@ -183,7 +188,7 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
           e.preventDefault();
           setIsDragOver(false);
           if (e.dataTransfer.files?.length) {
-            loadFilesAsSlides(e.dataTransfer.files);
+            onLoadImageFiles(e.dataTransfer.files);
           }
         }}
       >
@@ -195,20 +200,82 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
           hidden
           onChange={(e) => {
             if (e.target.files?.length) {
-              loadFilesAsSlides(e.target.files);
+              onLoadImageFiles(e.target.files);
               e.target.value = '';
             }
           }}
         />
 
-        {!cleanMode && (
+        {!cleanMode && isBuiltinLive && (
+          <header className="ppt-toolbar ppt-toolbar-live">
+            <div className="ppt-toolbar-left">
+              <span className="phase-badge phase-badge-live">
+                🟢 내장 슬라이드 프로젝터 발표 중 ({pptRatio}% : {100 - pptRatio}%)
+              </span>
+              <button
+                type="button"
+                className="toolbar-btn"
+                onClick={() => fileInputRef.current?.click()}
+                title="발표할 슬라이드 이미지(PNG/JPG)를 불러오거나 교체합니다"
+              >
+                📂 슬라이드 이미지 열기
+              </button>
+            </div>
+            <div className="ppt-toolbar-right">
+              <div className="zoom-controls" role="group" aria-label="슬라이드 확대/축소">
+                <button
+                  type="button"
+                  className="toolbar-btn"
+                  onClick={() => setZoomPercent((z) => Math.max(60, z - 10))}
+                  title="슬라이드 축소"
+                >
+                  −
+                </button>
+                <button
+                  type="button"
+                  className="toolbar-btn toolbar-btn-text"
+                  onClick={() => setZoomPercent(100)}
+                  title="화면 맞춤 (100%)"
+                >
+                  {zoomPercent}%
+                </button>
+                <button
+                  type="button"
+                  className="toolbar-btn"
+                  onClick={() => setZoomPercent((z) => Math.min(150, z + 10))}
+                  title="슬라이드 확대"
+                >
+                  +
+                </button>
+              </div>
+              <button
+                type="button"
+                className="toolbar-btn"
+                onClick={onToggleCleanMode}
+                title="상하단 툴바를 숨겨 슬라이드와 자막만 깔끔하게 표시합니다"
+              >
+                클린 모드
+              </button>
+              <button
+                type="button"
+                className="toolbar-btn toolbar-btn-stop"
+                onClick={onExitPresentationMode}
+                title="내장 슬라이드 프로젝터 발표 모드를 종료합니다"
+              >
+                ⏹ 발표 종료
+              </button>
+            </div>
+          </header>
+        )}
+
+        {!cleanMode && !isBuiltinLive && (
           <header className="ppt-toolbar">
             <div className="ppt-toolbar-left">
               <span
                 className="phase-badge"
-                title="PowerPoint를 창 모드 슬라이드쇼로 자동 실행하여 프로젝터 왼쪽 영역에 배치합니다"
+                title="좌측 슬라이드 영역과 우측 자막 영역 비율"
               >
-                🖥 슬라이드 영역 ({pptRatio}%) : 자막 ({100 - pptRatio}%)
+                🖥 슬라이드 ({pptRatio}%) : 자막 ({100 - pptRatio}%)
               </span>
 
               <button
@@ -217,7 +284,26 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
                 onClick={onStartProjectorPresentation}
                 title="프로젝터에 우측 자막 사이드바를 배치하고 PowerPoint 슬라이드쇼를 좌측에 자동 정렬합니다"
               >
-                🚀 프로젝터 발표 시작 (PPT 자동 정렬)
+                🚀 PPT 프로젝터 발표
+              </button>
+
+              <button
+                type="button"
+                className="toolbar-btn toolbar-btn-primary"
+                data-testid="start-builtin-presentation"
+                onClick={onStartBuiltinPresentation}
+                title="PowerPoint 없이 프로젝터 전체 화면에 내장 이미지 슬라이드와 실시간 자막을 함께 송출합니다"
+              >
+                🖼 내장 슬라이드 발표
+              </button>
+
+              <button
+                type="button"
+                className="toolbar-btn"
+                onClick={() => fileInputRef.current?.click()}
+                title="내보낸 슬라이드 이미지(PNG/JPG) 여러 장을 불러와 PowerPoint 없이 발표합니다"
+              >
+                📂 슬라이드 이미지 열기{hasCustomDeck ? ` (${imageSlides.length}장)` : ''}
               </button>
 
               <button
@@ -229,20 +315,11 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
                 ⚡ PPT 창 맞춤
               </button>
 
-              <button
-                type="button"
-                className="toolbar-btn"
-                onClick={() => fileInputRef.current?.click()}
-                title="내보낸 슬라이드 이미지(PNG/JPG) 여러 장을 불러와 내장 슬라이드 뷰어로 발표합니다"
-              >
-                📂 슬라이드 이미지 열기
-              </button>
-
               {hasCustomDeck && (
                 <button
                   type="button"
                   className="toolbar-btn"
-                  onClick={handleResetDeck}
+                  onClick={onResetDeck}
                   title="불러온 슬라이드 이미지를 닫고 가이드 화면으로 돌아갑니다"
                 >
                   가이드 보기
@@ -251,6 +328,15 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
             </div>
 
             <div className="ppt-toolbar-right">
+              <button
+                type="button"
+                className="toolbar-btn"
+                onClick={onOpenReadinessGuide}
+                title="온라인/오프라인 동작 범위, AI 모델 다운로드 용량 및 준비 상태를 확인합니다"
+              >
+                ❓ 준비 안내
+              </button>
+
               <button
                 type="button"
                 className={`toolbar-btn ${showProjectorSetup ? 'toolbar-btn-active' : ''}`}
@@ -304,18 +390,18 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
 
               <button
                 type="button"
-                className="toolbar-btn toolbar-btn-primary"
+                className="toolbar-btn"
                 onClick={onToggleFullScreen}
                 title="통합 전체 화면 전환 (F11)"
               >
-                {windowState.isFullScreen ? '전체화면 해제' : '통합 전체화면'}
+                {windowState.isFullScreen ? '전체화면 해제' : '전체화면'}
               </button>
             </div>
           </header>
         )}
 
         {/* Windows Projector & PowerPoint Quick Configuration Bar */}
-        {!cleanMode && showProjectorSetup && (
+        {!cleanMode && !isBuiltinLive && showProjectorSetup && (
           <div className="projector-config-bar">
             <div className="projector-config-group">
               <label className="projector-config-label" htmlFor="projector-display-select">
@@ -341,7 +427,7 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
             </div>
 
             <div className="projector-config-group">
-              <span className="projector-config-label">PPT 화면 비율:</span>
+              <span className="projector-config-label">슬라이드 화면 비율:</span>
               <div className="control-btn-group">
                 {[70, 72, 75, 80].map((preset) => (
                   <button
@@ -362,17 +448,20 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
                 value={pptRatio}
                 onChange={(e) => onChangePptRatio(Number(e.target.value))}
                 className="ratio-slider"
-                aria-label="PPT 화면 비율 슬라이더"
+                aria-label="슬라이드 화면 비율 슬라이더"
               />
             </div>
 
-            <label className="projector-checkbox-label" title="Windows에서 PowerPoint 창 제목 표시줄 및 테두리를 제거하여 풀스크린처럼 깔끔하게 맞춥니다">
+            <label
+              className="projector-checkbox-label"
+              title="Windows에서 PowerPoint 창 제목 표시줄 및 테두리를 제거하여 풀스크린처럼 깔끔하게 맞춥니다"
+            >
               <input
                 type="checkbox"
                 checked={pptBorderless}
                 onChange={onTogglePptBorderless}
               />
-              <span>PPT 창 제목 표시줄 제거 (Borderless)</span>
+              <span>PPT 창 테두리 제거 (Borderless)</span>
             </label>
 
             <button
@@ -430,7 +519,7 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
                   ))}
                 </ul>
                 <footer className="sample-slide-footer">
-                  <span>16:9 Presentation Stage · 이미지 슬라이드 드래그 앤 드롭 지원</span>
+                  <span>16:9 Presentation Stage · PNG/JPG 슬라이드 드래그 앤 드롭 발표 지원</span>
                   <span>
                     Slide {currentSample.number} / {totalSlides}
                   </span>
@@ -440,7 +529,7 @@ export const SlideStagePlaceholder: React.FC<SlideStagePlaceholderProps> = React
           </div>
         </div>
 
-        <footer className={`ppt-bottom-bar ${cleanMode ? 'ppt-bottom-bar-minimal' : ''}`}>
+        <footer className={`ppt-bottom-bar ${cleanMode || isBuiltinLive ? 'ppt-bottom-bar-minimal' : ''}`}>
           <button
             type="button"
             className="toolbar-btn toolbar-btn-text"

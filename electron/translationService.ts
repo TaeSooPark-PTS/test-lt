@@ -12,10 +12,21 @@ export interface TranslatorStatus {
   modelId: string;
   lastLatencyMs: number | null;
   cachedOnDisk?: boolean;
+  cacheDir?: string;
+  downloadedBytes?: number | null;
+  totalBytes?: number | null;
+  estimatedDownloadMB?: number;
+}
+
+export interface LocalTranslateOptions {
+  srcLang?: string;
+  tgtLang?: string;
+  isInterim?: boolean;
 }
 
 const MODEL_ID = 'Xenova/nllb-200-distilled-600M';
 const MODEL_DTYPE = 'q8';
+const ESTIMATED_DOWNLOAD_MB = 680;
 const TRANSLATE_TIMEOUT_MS = 45000;
 
 interface PendingJob {
@@ -23,6 +34,13 @@ interface PendingJob {
   resolve: (text: string) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout> | null;
+}
+
+interface QueuedReadyJob {
+  id: number;
+  text: string;
+  captionId?: string;
+  options?: LocalTranslateOptions;
 }
 
 function resolveWorkerScriptPath(): string {
@@ -53,27 +71,42 @@ function checkModelCachedOnDisk(cacheDir: string): boolean {
   return fs.existsSync(encoderPath) && fs.existsSync(decoderPath);
 }
 
+function formatMB(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))}MB`;
+}
+
 /**
- * Owns the translation utility process and exposes a Promise-based translate().
+ * Owns the translation utility process and exposes a Promise-based multilingual translate().
  */
 export class LocalTranslationService {
   private child: UtilityProcess | null = null;
   private initSent = false;
   private initFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private pending = new Map<number, PendingJob>();
-  private waitingForReady: Array<{ id: number; text: string; captionId?: string }> = [];
+  private waitingForReady: QueuedReadyJob[] = [];
   private seq = 0;
-  private cachedOnDisk = false;
-  private status: TranslatorStatus = {
-    state: 'idle',
-    progress: null,
-    message: '번역 모델이 아직 로드되지 않았습니다.',
-    modelId: MODEL_ID,
-    lastLatencyMs: null,
-    cachedOnDisk: false
-  };
+  private cachedOnDisk: boolean;
+  private readonly cacheDir: string;
+  private status: TranslatorStatus;
 
-  constructor(private readonly onStatus: (status: TranslatorStatus) => void) {}
+  constructor(private readonly onStatus: (status: TranslatorStatus) => void) {
+    this.cacheDir = resolveModelCacheDir();
+    this.cachedOnDisk = checkModelCachedOnDisk(this.cacheDir);
+    this.status = {
+      state: 'idle',
+      progress: null,
+      message: this.cachedOnDisk
+        ? '로컬 AI 모델이 디스크에 준비되어 있습니다. 시작 시 즉시 오프라인으로 로드됩니다.'
+        : `최초 1회 로컬 AI 모델 다운로드(약 ${ESTIMATED_DOWNLOAD_MB}MB, 인터넷 필요) 후 오프라인으로 동작합니다.`,
+      modelId: MODEL_ID,
+      lastLatencyMs: null,
+      cachedOnDisk: this.cachedOnDisk,
+      cacheDir: this.cacheDir,
+      downloadedBytes: null,
+      totalBytes: null,
+      estimatedDownloadMB: ESTIMATED_DOWNLOAD_MB
+    };
+  }
 
   public getStatus(): TranslatorStatus {
     return { ...this.status };
@@ -114,7 +147,7 @@ export class LocalTranslationService {
     }
     this.initSent = false;
 
-    const cacheDir = resolveModelCacheDir();
+    const cacheDir = this.cacheDir;
     this.cachedOnDisk = checkModelCachedOnDisk(cacheDir);
 
     const workerPath = resolveWorkerScriptPath();
@@ -128,12 +161,14 @@ export class LocalTranslationService {
     child.stderr?.on('data', (d: Buffer) => process.stderr.write(`[translator] ${d}`));
 
     this.setStatus({
-      state: 'loading',
+      state: this.cachedOnDisk ? 'loading' : 'downloading',
       progress: null,
       cachedOnDisk: this.cachedOnDisk,
+      downloadedBytes: null,
+      totalBytes: null,
       message: this.cachedOnDisk
-        ? '오프라인 번역 엔진 시작 중...'
-        : '번역 엔진 시작 및 모델 확인 중...'
+        ? '캐시된 로컬 AI 번역 엔진 시작 중 (오프라인 구동)...'
+        : `로컬 AI 번역 모델 다운로드 연결 중 (최초 1회, 약 ${ESTIMATED_DOWNLOAD_MB}MB)...`
     });
 
     child.on('message', (msg: Record<string, unknown>) => this.handleWorkerMessage(msg, cacheDir));
@@ -149,7 +184,6 @@ export class LocalTranslationService {
       });
     });
 
-    // Fallback in case 'spawned' arrived before listener registration
     this.initFallbackTimer = setTimeout(() => {
       this.sendInitOnce(cacheDir);
     }, 1500);
@@ -171,14 +205,20 @@ export class LocalTranslationService {
             state: 'loading',
             progress,
             cachedOnDisk: true,
-            message: `오프라인 번역 모델 불러오는 중... ${pct}%`
+            downloadedBytes: loaded,
+            totalBytes: total,
+            message: `로컬 캐시에서 번역 모델 불러오는 중... ${pct}%`
           });
         } else {
+          const sizeDetail =
+            total > 0 ? ` (${formatMB(loaded)} / ${formatMB(total)})` : '';
           this.setStatus({
             state: 'downloading',
             progress,
             cachedOnDisk: false,
-            message: `번역 모델 다운로드 중 (최초 1회, 약 900MB) ${pct}%`
+            downloadedBytes: loaded,
+            totalBytes: total,
+            message: `번역 모델 다운로드 중 (최초 1회)${sizeDetail} · ${pct}%`
           });
         }
         break;
@@ -196,10 +236,12 @@ export class LocalTranslationService {
           state: 'ready',
           progress: null,
           cachedOnDisk: true,
-          message: '오프라인 AI 번역 준비 완료'
+          downloadedBytes: null,
+          totalBytes: null,
+          message: '로컬 AI 번역 준비 완료 (디스크 캐시됨 · 번역은 오프라인 구동)'
         });
         const queued = this.waitingForReady.splice(0);
-        for (const job of queued) this.dispatch(job.id, job.text, job.captionId);
+        for (const job of queued) this.dispatch(job.id, job.text, job.captionId, job.options);
         break;
       }
       case 'init-error':
@@ -207,7 +249,9 @@ export class LocalTranslationService {
         this.setStatus({
           state: 'error',
           progress: null,
-          message: `번역 모델 로드 실패: ${String(msg.message).slice(0, 160)}`
+          message: this.cachedOnDisk
+            ? `번역 모델 로드 실패: ${String(msg.message).slice(0, 160)}`
+            : `모델 다운로드 실패 (최초 1회 인터넷 연결 필요): ${String(msg.message).slice(0, 140)}`
         });
         this.child?.kill();
         this.child = null;
@@ -231,7 +275,6 @@ export class LocalTranslationService {
         if (!job) return;
         this.pending.delete(Number(msg.id));
         if (job.timer) clearTimeout(job.timer);
-        // Resolve empty or reject silently as superseded
         job.reject(new Error('SUPERSEDED'));
         break;
       }
@@ -248,16 +291,33 @@ export class LocalTranslationService {
     }
   }
 
-  private dispatch(id: number, text: string, captionId?: string): void {
+  private dispatch(
+    id: number,
+    text: string,
+    captionId?: string,
+    options?: LocalTranslateOptions
+  ): void {
     const job = this.pending.get(id);
     if (!job || !this.child) return;
     job.timer = setTimeout(() => {
       if (this.pending.delete(id)) job.reject(new Error('번역 시간 초과'));
     }, TRANSLATE_TIMEOUT_MS);
-    this.child.postMessage({ type: 'translate', id, text, captionId });
+    this.child.postMessage({
+      type: 'translate',
+      id,
+      text,
+      captionId,
+      srcLang: options?.srcLang,
+      tgtLang: options?.tgtLang,
+      isInterim: options?.isInterim
+    });
   }
 
-  public translate(text: string, captionId?: string): Promise<string> {
+  public translate(
+    text: string,
+    captionId?: string,
+    options?: LocalTranslateOptions
+  ): Promise<string> {
     const clean = text.trim();
     if (!clean) return Promise.resolve('');
     this.prepare();
@@ -267,7 +327,7 @@ export class LocalTranslationService {
     return new Promise<string>((resolve, reject) => {
       this.pending.set(id, { captionId, resolve, reject, timer: null });
       if (this.status.state === 'ready') {
-        this.dispatch(id, clean, captionId);
+        this.dispatch(id, clean, captionId, options);
       } else {
         if (captionId) {
           for (let i = this.waitingForReady.length - 1; i >= 0; i -= 1) {
@@ -281,7 +341,7 @@ export class LocalTranslationService {
             }
           }
         }
-        this.waitingForReady.push({ id, text: clean, captionId });
+        this.waitingForReady.push({ id, text: clean, captionId, options });
       }
     });
   }
@@ -298,7 +358,7 @@ export class LocalTranslationService {
   }
 
   private failAll(err: Error): void {
-    for (const [, job] of this.pending) {
+    for (const job of this.pending.values()) {
       if (job.timer) clearTimeout(job.timer);
       job.reject(err);
     }
@@ -311,10 +371,9 @@ export class LocalTranslationService {
       clearTimeout(this.initFallbackTimer);
       this.initFallbackTimer = null;
     }
-    const child = this.child;
+    this.failAll(new Error('앱 종료'));
+    this.child?.kill();
     this.child = null;
     this.initSent = false;
-    this.failAll(new Error('번역 엔진 종료'));
-    child?.kill();
   }
 }

@@ -1,7 +1,17 @@
-import type { AppSettings, CaptionLayout, LiveView, TranslationEngineId } from './settings';
+import type { CaptionCardItem } from './caption';
+import type {
+  AppSettings,
+  CaptionLayout,
+  LiveView,
+  PresentationStagePref,
+  SourceLanguageSetting,
+  TargetLanguageSetting,
+  TranslationEngineId
+} from './settings';
 import type {
   TiroBoundsRect,
   TiroDomDiagnostics,
+  TiroElementFingerprint,
   TiroObserverTelemetry,
   TiroRadarCandidate,
   TiroRawCaptionPayload,
@@ -9,7 +19,15 @@ import type {
   TiroViewState
 } from './tiro';
 
-export type { AppSettings, CaptionLayout, LiveView, TranslationEngineId };
+export type {
+  AppSettings,
+  CaptionLayout,
+  LiveView,
+  PresentationStagePref,
+  SourceLanguageSetting,
+  TargetLanguageSetting,
+  TranslationEngineId
+};
 
 export interface DisplaySummary {
   id: number;
@@ -22,11 +40,14 @@ export interface DisplaySummary {
   isPrimary: boolean;
 }
 
+export type ActivePresentationStageMode = 'none' | 'external-ppt' | 'builtin-deck';
+
 export interface WindowState {
   isFullScreen: boolean;
   isMaximized: boolean;
   isAlwaysOnTop: boolean;
   isPresentationMode: boolean;
+  presentationStageMode?: ActivePresentationStageMode;
   currentDisplayId: number;
 }
 
@@ -49,6 +70,16 @@ export interface TranslatorStatus {
   modelId: string;
   lastLatencyMs: number | null;
   cachedOnDisk?: boolean;
+  cacheDir?: string;
+  downloadedBytes?: number | null;
+  totalBytes?: number | null;
+  estimatedDownloadMB?: number;
+}
+
+export interface LocalTranslateIpcOptions {
+  srcLang?: string;
+  tgtLang?: string;
+  isInterim?: boolean;
 }
 
 export interface ScreenRect {
@@ -77,11 +108,14 @@ export interface ApplyLayoutRequest {
   pptRatio?: number;
   arrangePpt?: boolean;
   startSlideshow?: boolean;
+  stageMode?: 'auto' | 'external-ppt' | 'builtin-deck';
+  hasCustomDeck?: boolean;
 }
 
 export interface ApplyLayoutResult {
   displayId: number;
   displayLabel: string;
+  stageMode: 'external-ppt' | 'builtin-deck';
   sidebar: ScreenRect;
   ppt: ScreenRect;
   pptResult: PptArrangeResult | null;
@@ -101,6 +135,30 @@ export interface ExportFileResult {
   error?: string;
 }
 
+export interface TranscriptSessionSummary {
+  sessionId: string;
+  title: string;
+  source: 'tiro' | 'mock';
+  sourceLanguage: string;
+  targetLanguage: string;
+  captionCount: number;
+  startedAt: number;
+  updatedAt: number;
+}
+
+export interface TranscriptSessionRecord extends TranscriptSessionSummary {
+  items: CaptionCardItem[];
+}
+
+export interface SaveSessionSnapshotInput {
+  sessionId: string;
+  source: 'tiro' | 'mock';
+  sourceLanguage?: string;
+  targetLanguage?: string;
+  startedAt?: number;
+  items: CaptionCardItem[];
+}
+
 export interface ElectronTiroBridge {
   getState: () => Promise<TiroViewState | null>;
   setVisible: (visible: boolean) => Promise<TiroViewState | null>;
@@ -111,6 +169,7 @@ export interface ElectronTiroBridge {
   sendCommand: (payload: {
     action: string;
     selector?: string;
+    fingerprint?: TiroElementFingerprint | null;
     latencySampleMs?: number;
     waitForElement?: boolean;
     preserveHistory?: boolean;
@@ -132,7 +191,11 @@ export interface ElectronSettingsBridge {
 export interface ElectronTranslatorBridge {
   getStatus: () => Promise<TranslatorStatus>;
   prepare: () => Promise<TranslatorStatus>;
-  translate: (text: string, captionId?: string) => Promise<string>;
+  translate: (
+    text: string,
+    captionId?: string,
+    options?: LocalTranslateIpcOptions
+  ) => Promise<string>;
   cancelPending: () => Promise<void>;
   onStatus: (callback: (status: TranslatorStatus) => void) => () => void;
 }
@@ -152,6 +215,11 @@ export interface ElectronWindowControlsBridge {
 
 export interface ElectronCaptionsBridge {
   exportFile: (req: ExportFileRequest) => Promise<ExportFileResult>;
+  saveSession: (input: SaveSessionSnapshotInput) => Promise<TranscriptSessionSummary | null>;
+  listSessions: () => Promise<TranscriptSessionSummary[]>;
+  loadSession: (sessionId: string) => Promise<TranscriptSessionRecord | null>;
+  deleteSession: (sessionId: string) => Promise<boolean>;
+  openSessionsDir: () => Promise<boolean>;
 }
 
 export interface ElectronAPI {

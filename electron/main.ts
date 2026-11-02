@@ -1,23 +1,31 @@
-import { app, BrowserWindow, dialog, ipcMain, screen, type Display } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen, shell, type Display } from 'electron';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { arrangePowerPoint, type PptArrangeResult, type ScreenRect } from './pptArranger';
 import { computeProjectorLayout } from './projectorLayout';
+import {
+  SessionTranscriptStore,
+  type SaveSessionSnapshotInput
+} from './sessionTranscriptStore';
 import { SettingsStore, type AppSettings } from './settingsStore';
 import { registerTiroIpcHandlers, TiroSessionManager } from './tiroSessionManager';
-import { LocalTranslationService } from './translationService';
+import { LocalTranslationService, type LocalTranslateOptions } from './translationService';
 
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.tiro.bilingual.workspace');
 }
 
+export type ActivePresentationStageMode = 'none' | 'external-ppt' | 'builtin-deck';
+
 let mainWindow: BrowserWindow | null = null;
 let tiroManager: TiroSessionManager | null = null;
 let settingsStore: SettingsStore | null = null;
+let sessionStore: SessionTranscriptStore | null = null;
 let translator: LocalTranslationService | null = null;
 let isPresentationMode = false;
+let presentationStageMode: ActivePresentationStageMode = 'none';
 let isExiting = false;
 
 const isSmokeTest = process.argv.includes('--smoke-test');
@@ -102,6 +110,7 @@ function getWindowState() {
       isMaximized: false,
       isAlwaysOnTop: false,
       isPresentationMode,
+      presentationStageMode,
       currentDisplayId: screen.getPrimaryDisplay().id
     };
   }
@@ -111,6 +120,7 @@ function getWindowState() {
     isMaximized: mainWindow.isMaximized(),
     isAlwaysOnTop: mainWindow.isAlwaysOnTop(),
     isPresentationMode,
+    presentationStageMode,
     currentDisplayId: currentDisplay.id
   };
 }
@@ -158,9 +168,12 @@ function createMainWindow(): void {
       }
     }
   );
-  const initialSelector = settingsStore?.get().tiroSelector;
-  if (initialSelector) {
-    tiroManager.setDesiredSelector(initialSelector);
+  const initialSettings = settingsStore?.get();
+  if (initialSettings?.tiroSelector) {
+    tiroManager.setDesiredSelector(
+      initialSettings.tiroSelector,
+      initialSettings.tiroFingerprint
+    );
   }
 
   mainWindow.on('enter-full-screen', broadcastWindowState);
@@ -441,11 +454,14 @@ interface ApplyLayoutRequest {
   pptRatio?: number;
   arrangePpt?: boolean;
   startSlideshow?: boolean;
+  stageMode?: 'auto' | 'external-ppt' | 'builtin-deck';
+  hasCustomDeck?: boolean;
 }
 
 interface ApplyLayoutResult {
   displayId: number;
   displayLabel: string;
+  stageMode: 'external-ppt' | 'builtin-deck';
   sidebar: ScreenRect;
   ppt: ScreenRect;
   pptResult: PptArrangeResult | null;
@@ -461,12 +477,33 @@ async function applyPresentationLayout(req: ApplyLayoutRequest): Promise<ApplyLa
 
   const display = resolveProjectorDisplay(settings.projectorDisplayId);
   const layout = computeProjectorLayout(display.workArea, settings.pptRatio);
+  const requestedStage = req.stageMode ?? settings.presentationStagePref ?? 'auto';
 
-  if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false);
-  if (mainWindow.isMaximized()) mainWindow.unmaximize();
-  isPresentationMode = true;
-  mainWindow.setBounds(layout.sidebar);
-  broadcastWindowState();
+  const applyBuiltinDeckFullProjector = (noticeMessage: string): ApplyLayoutResult => {
+    if (mainWindow!.isMaximized()) mainWindow!.unmaximize();
+    isPresentationMode = true;
+    presentationStageMode = 'builtin-deck';
+    mainWindow!.setBounds(display.bounds);
+    mainWindow!.setFullScreen(true);
+    broadcastWindowState();
+    return {
+      displayId: display.id,
+      displayLabel: display.label || `Display ${display.id}`,
+      stageMode: 'builtin-deck',
+      sidebar: layout.sidebar,
+      ppt: layout.ppt,
+      pptResult: {
+        ok: true,
+        message: noticeMessage
+      }
+    };
+  };
+
+  if (requestedStage === 'builtin-deck') {
+    return applyBuiltinDeckFullProjector(
+      'PowerPoint 없이 내장 슬라이드 스테이지 + 실시간 이중언어 자막으로 프로젝터 전체화면 발표를 시작했습니다.'
+    );
+  }
 
   let pptResult: PptArrangeResult | null = null;
   if (req.arrangePpt) {
@@ -476,9 +513,25 @@ async function applyPresentationLayout(req: ApplyLayoutRequest): Promise<ApplyLa
     });
   }
 
+  // Automatic fallback: when in 'auto' mode, if PowerPoint is unavailable/closed and the presenter
+  // loaded image slides into the built-in stage, present the built-in deck + captions on the projector!
+  if (requestedStage === 'auto' && req.hasCustomDeck && pptResult && !pptResult.ok) {
+    return applyBuiltinDeckFullProjector(
+      'PowerPoint가 실행 중이지 않아 불러온 내장 이미지 슬라이드 + 실시간 자막 모드로 프로젝터 발표를 시작했습니다.'
+    );
+  }
+
+  if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false);
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  isPresentationMode = true;
+  presentationStageMode = 'external-ppt';
+  mainWindow.setBounds(layout.sidebar);
+  broadcastWindowState();
+
   return {
     displayId: display.id,
     displayLabel: display.label || `Display ${display.id}`,
+    stageMode: 'external-ppt',
     sidebar: layout.sidebar,
     ppt: layout.ppt,
     pptResult
@@ -488,6 +541,10 @@ async function applyPresentationLayout(req: ApplyLayoutRequest): Promise<ApplyLa
 function exitPresentationLayout(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   isPresentationMode = false;
+  presentationStageMode = 'none';
+  if (mainWindow.isFullScreen()) {
+    mainWindow.setFullScreen(false);
+  }
   const primary = screen.getPrimaryDisplay().workArea;
   const width = Math.min(SETUP_WINDOW_SIZE.width, primary.width);
   const height = Math.min(SETUP_WINDOW_SIZE.height, primary.height);
@@ -516,21 +573,24 @@ function registerIpcHandlers(): void {
   ipcMain.handle('settings:update', (_event, patch: Partial<AppSettings>) => {
     if (!settingsStore) return null;
     const next = settingsStore.update(patch ?? {});
-    if (patch.tiroSelector !== undefined && tiroManager) {
-      tiroManager.setDesiredSelector(next.tiroSelector);
+    if (
+      (patch.tiroSelector !== undefined || patch.tiroFingerprint !== undefined) &&
+      tiroManager
+    ) {
+      tiroManager.setDesiredSelector(next.tiroSelector, next.tiroFingerprint);
     }
     mainWindow?.webContents.send('settings:changed', next);
     return next;
   });
 
-  // ---- Offline translator ----
+  // ---- Offline / Local AI translator ----
   ipcMain.handle('translator:get-status', () => translator?.getStatus() ?? null);
   ipcMain.handle('translator:prepare', () => translator?.prepare() ?? null);
   ipcMain.handle(
     'translator:translate',
-    async (_event, text: string, captionId?: string) => {
+    async (_event, text: string, captionId?: string, options?: LocalTranslateOptions) => {
       if (!translator) throw new Error('번역 엔진이 초기화되지 않았습니다.');
-      return translator.translate(String(text ?? ''), captionId);
+      return translator.translate(String(text ?? ''), captionId, options);
     }
   );
   ipcMain.handle('translator:cancel-pending', () => {
@@ -553,6 +613,27 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle('layout:exit', () => {
     exitPresentationLayout();
+  });
+
+  // ---- Persistent Session Auto-Save & Recovery ----
+  ipcMain.handle('captions:save-session', (_event, input: SaveSessionSnapshotInput) => {
+    if (!sessionStore || !input) return null;
+    return sessionStore.saveSnapshot(input);
+  });
+  ipcMain.handle('captions:list-sessions', () => sessionStore?.listSessions() ?? []);
+  ipcMain.handle('captions:load-session', (_event, sessionId: string) => {
+    if (!sessionStore || !sessionId) return null;
+    return sessionStore.loadSession(String(sessionId));
+  });
+  ipcMain.handle('captions:delete-session', (_event, sessionId: string) => {
+    if (!sessionStore || !sessionId) return false;
+    return sessionStore.deleteSession(String(sessionId));
+  });
+  ipcMain.handle('captions:open-sessions-dir', async () => {
+    const dir = sessionStore?.getSessionsDir();
+    if (!dir) return false;
+    await shell.openPath(dir);
+    return true;
   });
 
   // ---- Transcript File Export ----
@@ -672,10 +753,16 @@ app.whenReady().then(() => {
             translationEngine: 'mock',
             pptRatio: 75,
             captionLayout: 'columns',
-            showEnglish: true
+            showEnglish: true,
+            sourceLanguage: 'en',
+            targetLanguage: 'ko',
+            firstRunGuideDismissed: true
           }
         }
       : {}
+  );
+  sessionStore = new SessionTranscriptStore(
+    isHeadlessVerify ? { inMemory: true } : {}
   );
   translator = new LocalTranslationService((status) => {
     if (mainWindow && !mainWindow.isDestroyed()) {

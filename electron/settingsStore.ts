@@ -1,46 +1,82 @@
 import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { TiroElementFingerprint } from './tiroDomMatcher';
 
 export type CaptionLayout = 'columns' | 'stacked';
 export type LiveView = 'cards' | 'tiro-split';
 export type TranslationEngineId = 'local' | 'mock';
+export type SourceLanguageSetting = 'auto' | 'en' | 'ko' | 'ja' | 'zh' | 'es' | 'fr' | 'de' | 'vi';
+export type TargetLanguageSetting = 'ko' | 'en' | 'ja' | 'zh';
+export type PresentationStagePref = 'auto' | 'external-ppt' | 'builtin-deck';
+
+const VALID_SOURCE_LANGS = new Set<SourceLanguageSetting>([
+  'auto',
+  'en',
+  'ko',
+  'ja',
+  'zh',
+  'es',
+  'fr',
+  'de',
+  'vi'
+]);
+
+const VALID_TARGET_LANGS = new Set<TargetLanguageSetting>(['ko', 'en', 'ja', 'zh']);
 
 export interface AppSettings {
   /** Tiro URL to restore on launch (logged-in session is kept in persist:tiro). */
   tiroUrl: string;
-  /** CSS selector of Tiro's English caption container (picked once, re-attached automatically). */
+  /** CSS selector of Tiro's caption container (picked once, re-attached automatically). */
   tiroSelector: string | null;
+  /** Multi-anchor structural & spatial DOM fingerprint for self-healing when Tiro selectors change. */
+  tiroFingerprint: TiroElementFingerprint | null;
   /** Display id of the projector. null = auto (first non-primary display). */
   projectorDisplayId: number | null;
-  /** Percentage of projector width given to the PowerPoint slideshow (70~75 recommended). */
+  /** Percentage of projector width given to the slide stage / PowerPoint (70~75 recommended). */
   pptRatio: number;
   /** Strip PowerPoint's window title bar after arranging. */
   pptBorderless: boolean;
+  /** Preferred projector presentation stage ('auto' | 'external-ppt' | 'builtin-deck'). */
+  presentationStagePref: PresentationStagePref;
   fontSizePx: number;
   cardGapPx: number;
   captionLayout: CaptionLayout;
   liveView: LiveView;
-  /** Show English (Tiro) text next to Korean. */
+  /** Show source language text next to target translation. */
   showEnglish: boolean;
   translationEngine: TranslationEngineId;
+  /** Source speech language ('auto' detects EN/JA/ZH/ES/FR/DE/VI/KO per utterance). */
+  sourceLanguage: SourceLanguageSetting;
+  /** Target translation language (default 'ko'). */
+  targetLanguage: TargetLanguageSetting;
+  /** User-defined terminology glossary lines ("Source = Target"). */
+  glossaryRaw: string;
   /** Translate in-progress (interim) sentences so long utterances do not wait for the full stop. */
   translateInterim: boolean;
+  /** Whether the user has acknowledged the first-run offline/online readiness guide. */
+  firstRunGuideDismissed: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   tiroUrl: 'https://tiro.ooo/login',
   tiroSelector: null,
+  tiroFingerprint: null,
   projectorDisplayId: null,
   pptRatio: 72,
   pptBorderless: true,
+  presentationStagePref: 'auto',
   fontSizePx: 20,
   cardGapPx: 8,
   captionLayout: 'columns',
   liveView: 'cards',
   showEnglish: true,
   translationEngine: 'local',
-  translateInterim: true
+  sourceLanguage: 'auto',
+  targetLanguage: 'ko',
+  glossaryRaw: '',
+  translateInterim: true,
+  firstRunGuideDismissed: false
 };
 
 function clamp(n: number, min: number, max: number): number {
@@ -84,11 +120,36 @@ export function sanitizeSettings(
   if (next.translationEngine !== 'local' && next.translationEngine !== 'mock') {
     next.translationEngine = DEFAULT_SETTINGS.translationEngine;
   }
+  if (
+    next.presentationStagePref !== 'auto' &&
+    next.presentationStagePref !== 'external-ppt' &&
+    next.presentationStagePref !== 'builtin-deck'
+  ) {
+    next.presentationStagePref = DEFAULT_SETTINGS.presentationStagePref;
+  }
+  if (!VALID_SOURCE_LANGS.has(next.sourceLanguage)) {
+    next.sourceLanguage = DEFAULT_SETTINGS.sourceLanguage;
+  }
+  if (!VALID_TARGET_LANGS.has(next.targetLanguage)) {
+    next.targetLanguage = DEFAULT_SETTINGS.targetLanguage;
+  }
+  if (typeof next.glossaryRaw === 'string') {
+    next.glossaryRaw = next.glossaryRaw.slice(0, 8000);
+  } else {
+    next.glossaryRaw = '';
+  }
   if (typeof next.tiroSelector === 'string') {
     const trimmed = next.tiroSelector.trim();
     next.tiroSelector = trimmed ? trimmed : null;
   } else {
     next.tiroSelector = null;
+  }
+  if (
+    !next.tiroFingerprint ||
+    typeof next.tiroFingerprint !== 'object' ||
+    typeof next.tiroFingerprint.tagName !== 'string'
+  ) {
+    next.tiroFingerprint = null;
   }
   if (typeof next.tiroUrl !== 'string' || !next.tiroUrl.trim()) {
     next.tiroUrl = DEFAULT_SETTINGS.tiroUrl;
@@ -101,6 +162,7 @@ export function sanitizeSettings(
   next.pptBorderless = Boolean(next.pptBorderless);
   next.showEnglish = Boolean(next.showEnglish);
   next.translateInterim = Boolean(next.translateInterim);
+  next.firstRunGuideDismissed = Boolean(next.firstRunGuideDismissed);
 
   return next;
 }

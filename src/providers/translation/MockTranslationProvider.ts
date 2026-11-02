@@ -1,5 +1,14 @@
 import type { TranslationProviderStatus } from '../../types/translation';
-import type { TranslationProvider } from './TranslationProvider';
+import {
+  detectSpeechLanguage,
+  type ConcreteLanguageCode
+} from '../../utils/languageDetector';
+import {
+  applyGlossaryToTranslation,
+  cleanSpokenSttText,
+  parseGlossary
+} from '../../utils/speechTextProcessor';
+import type { ProviderTranslateOptions, TranslationProvider } from './TranslationProvider';
 
 const MOCK_KO_DICTIONARY: Readonly<Record<string, string>> = {
   'Good afternoon everyone, and thank you for joining today’s architecture review.':
@@ -30,29 +39,45 @@ export class MockTranslationProvider implements TranslationProvider {
   public async translate(
     text: string,
     sourceLanguage = 'en',
-    targetLanguage = 'ko'
+    targetLanguage = 'ko',
+    _captionId?: string,
+    options?: ProviderTranslateOptions
   ): Promise<string> {
-    const clean = text.trim();
+    const clean = cleanSpokenSttText(text);
     if (!clean) return '';
 
-    // Variable delay (450ms ~ 1150ms) to verify English-first display and out-of-order completion safety
-    const simulatedDelayMs = 450 + ((clean.length * 13) % 700);
-    await new Promise((resolve) => window.setTimeout(resolve, simulatedDelayMs));
+    const concreteSrc: ConcreteLanguageCode =
+      sourceLanguage === 'auto'
+        ? detectSpeechLanguage(clean, 'en')
+        : (sourceLanguage as ConcreteLanguageCode);
+    const concreteTgt = (targetLanguage || 'ko') as ConcreteLanguageCode;
+
+    if (concreteSrc === concreteTgt) {
+      return clean;
+    }
+
+    // Variable delay (350ms ~ 950ms) to verify source-first display and out-of-order completion safety
+    const simulatedDelayMs = options?.isInterim
+      ? 220 + ((clean.length * 7) % 280)
+      : 380 + ((clean.length * 13) % 580);
+    await new Promise((resolve) => globalThis.setTimeout(resolve, simulatedDelayMs));
 
     if (this.simulateFailureNext) {
       this.simulateFailureNext = false;
       throw new Error('Mock 번역 지연/일시 오류 시뮬레이션 (재시도 버튼으로 복구 가능)');
     }
 
-    if (sourceLanguage === 'en' && targetLanguage === 'ko') {
+    const glossary = parseGlossary(options?.glossaryRaw);
+    let translated: string;
+
+    if (concreteSrc === 'en' && concreteTgt === 'ko') {
       const exact = MOCK_KO_DICTIONARY[clean];
-      if (exact) {
-        return exact;
-      }
-      return `[Mock 번역] ${clean}`;
+      translated = exact ?? `[Mock 번역] ${clean}`;
+    } else {
+      translated = `[${concreteSrc.toUpperCase()}→${concreteTgt.toUpperCase()} Mock] ${clean}`;
     }
 
-    return `[${sourceLanguage}->${targetLanguage} Mock] ${clean}`;
+    return applyGlossaryToTranslation(clean, translated, glossary);
   }
 
   public getStatus(): TranslationProviderStatus {
@@ -60,9 +85,9 @@ export class MockTranslationProvider implements TranslationProvider {
       providerName: 'MockTranslationProvider',
       isMock: true,
       state: 'ready',
-      sourceLanguage: 'en',
+      sourceLanguage: 'auto',
       targetLanguage: 'ko',
-      message: '실제 번역 API 미연결 (Phase 1 Mock 번역 동작 중)'
+      message: '테스트/리허설용 Mock 번역 엔진 활성'
     };
   }
 }

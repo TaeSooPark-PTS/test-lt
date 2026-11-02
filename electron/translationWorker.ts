@@ -15,7 +15,15 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 
 type InitMessage = { type: 'init'; cacheDir: string; modelId: string; dtype: string };
-type TranslateMessage = { type: 'translate'; id: number; text: string; captionId?: string };
+type TranslateMessage = {
+  type: 'translate';
+  id: number;
+  text: string;
+  captionId?: string;
+  srcLang?: string;
+  tgtLang?: string;
+  isInterim?: boolean;
+};
 type ClearMessage = { type: 'clear-pending' };
 type WorkerInbound = InitMessage | TranslateMessage | ClearMessage;
 
@@ -59,6 +67,15 @@ function resolveUnpackedPath(rawPath: string): string {
     return unpacked;
   }
   return rawPath;
+}
+
+function computeAdaptiveMaxNewTokens(text: string, isInterim?: boolean): number {
+  const charLen = text.trim().length;
+  // Tighter dynamic token budget prevents runaway repetition loops on noisy STT fragments
+  // and speeds up short/medium utterances by 25~40%.
+  const estimated = Math.ceil(charLen * (isInterim ? 1.55 : 1.85)) + 18;
+  const cap = isInterim ? 160 : 256;
+  return Math.min(cap, Math.max(24, estimated));
 }
 
 function ensureTransformersRuntime(): TransformersModule {
@@ -144,7 +161,7 @@ function loadTranslator(msg: InitMessage): Promise<TranslatorFn> {
       }
     }) as Promise<TranslatorFn>
   ).then(async (translator) => {
-    // Warm-up so the first live sentence is not slowed by lazy session init.
+    // Warm-up so the first live sentence is not slowed by lazy WASM session init.
     post({ type: 'loading', message: '번역 모델 워밍업 중...' });
     await translator('Hello.', { src_lang: 'eng_Latn', tgt_lang: 'kor_Hang', max_new_tokens: 16 });
     return translator;
@@ -168,11 +185,27 @@ async function pump(): Promise<void> {
   const startedAt = Date.now();
   try {
     const translator = await translatorPromise;
-    const output = await translator(job.text, {
-      src_lang: 'eng_Latn',
-      tgt_lang: 'kor_Hang',
-      max_new_tokens: 320
-    });
+    const srcLang = job.srcLang || 'eng_Latn';
+    const tgtLang = job.tgtLang || 'kor_Hang';
+    const maxNewTokens = computeAdaptiveMaxNewTokens(job.text, job.isInterim);
+
+    const decodeOpts: Record<string, unknown> = job.isInterim
+      ? {
+          src_lang: srcLang,
+          tgt_lang: tgtLang,
+          max_new_tokens: maxNewTokens,
+          num_beams: 1
+        }
+      : {
+          src_lang: srcLang,
+          tgt_lang: tgtLang,
+          max_new_tokens: maxNewTokens,
+          num_beams: 1,
+          no_repeat_ngram_size: 3,
+          repetition_penalty: 1.12
+        };
+
+    const output = await translator(job.text, decodeOpts);
     const first = Array.isArray(output) ? output[0] : output;
     post({
       type: 'result',
