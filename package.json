@@ -18,8 +18,8 @@
     "smoke": "npm run build && electron . --smoke-test",
     "poc:verify": "npm run build && electron . --poc-verify",
     "poc:verify:ci": "npm run build && electron . --poc-verify --ci",
-    "pack:win": "npm run build && electron-builder --win --dir --x64",
-    "dist:win": "npm run build && electron-builder --win nsis --x64"
+    "pack:win": "npm run build && electron-builder --win --dir --x64 --publish never",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.2",
