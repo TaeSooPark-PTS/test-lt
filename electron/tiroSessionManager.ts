@@ -200,11 +200,12 @@ export class TiroSessionManager {
       }
     });
     wc.on('render-process-gone', (_event, details) => {
+      if (this.isShuttingDown) return;
       this.lastError = `Tiro 화면이 종료되었습니다 (${details.reason}). 자동으로 다시 불러옵니다.`;
       this.observing = false;
       emitState();
       setTimeout(() => {
-        if (!wc.isDestroyed()) wc.reload();
+        if (!this.isShuttingDown && !wc.isDestroyed()) wc.reload();
       }, 1500);
     });
 
@@ -215,10 +216,11 @@ export class TiroSessionManager {
   }
 
   private reattachTimer: ReturnType<typeof setTimeout> | null = null;
+  private isShuttingDown = false;
 
   /** Re-sends the observer command for the saved selector (preload waits until the element exists). */
   private scheduleReattach(delayMs: number): void {
-    if (!this.desiredSelector) return;
+    if (this.isShuttingDown || !this.desiredSelector) return;
     if (this.reattachTimer) clearTimeout(this.reattachTimer);
     this.reattachTimer = setTimeout(() => {
       this.reattachTimer = null;
@@ -401,11 +403,56 @@ export class TiroSessionManager {
   }
 
   public destroy(): void {
-    if (this.view && !this.view.webContents.isDestroyed()) {
-      this.mainWindow.contentView.removeChildView(this.view);
-      this.view.webContents.close();
+    void this.destroyAsync();
+  }
+
+  public async destroyAsync(): Promise<void> {
+    this.isShuttingDown = true;
+    if (this.reattachTimer) {
+      clearTimeout(this.reattachTimer);
+      this.reattachTimer = null;
     }
+
+    const view = this.view;
     this.view = null;
+    if (!view) return;
+
+    if (!this.mainWindow.isDestroyed()) {
+      try {
+        this.mainWindow.contentView.removeChildView(view);
+      } catch {
+        // ignore if already detached
+      }
+    }
+
+    const wc = view.webContents;
+    if (!wc.isDestroyed()) {
+      wc.removeAllListeners();
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          try {
+            if (!wc.isDestroyed()) {
+              wc.forcefullyCrashRenderer();
+            }
+          } catch {
+            // ignore
+          }
+          resolve();
+        }, 400);
+
+        wc.once('destroyed', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+
+        try {
+          wc.close({ waitForBeforeUnload: false });
+        } catch {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    }
   }
 }
 

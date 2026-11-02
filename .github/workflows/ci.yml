@@ -11,6 +11,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   quality-gate:
     name: Typecheck, Unit Tests & Bundle (Ubuntu)
@@ -62,17 +65,21 @@ jobs:
         run: npm test
 
       - name: Run Electron headless layout & translation smoke test on Windows
+        timeout-minutes: 3
         run: npm run smoke
 
       - name: Run Electron Tiro WebContentsView & MutationObserver E2E verification on Windows
+        timeout-minutes: 3
         run: npm run poc:verify:ci
 
       - name: Build Windows x64 NSIS Installer & Unpacked App
+        timeout-minutes: 10
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run dist:win
 
       - name: Verify Windows unpacked ASAR, ONNX WASM runtime & packaged EXE smoke boot
+        timeout-minutes: 3
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -89,7 +96,11 @@ jobs:
             Write-Host "Verified: $p"
           }
 
-          $proc = Start-Process -FilePath $exePath -ArgumentList '--smoke-test' -Wait -PassThru
+          $proc = Start-Process -FilePath $exePath -ArgumentList '--smoke-test' -PassThru
+          if (-not $proc.WaitForExit(45000)) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            throw "Packaged Windows EXE smoke test timed out after 45s"
+          }
           if ($proc.ExitCode -ne 0) {
             throw "Packaged Windows EXE smoke test failed with exit code $($proc.ExitCode)"
           }

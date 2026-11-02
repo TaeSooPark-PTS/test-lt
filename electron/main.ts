@@ -18,17 +18,53 @@ let tiroManager: TiroSessionManager | null = null;
 let settingsStore: SettingsStore | null = null;
 let translator: LocalTranslationService | null = null;
 let isPresentationMode = false;
+let isExiting = false;
 
 const isSmokeTest = process.argv.includes('--smoke-test');
 const isPocVerify = process.argv.includes('--poc-verify');
 const isCiMode = process.argv.includes('--ci') || process.env.CI === 'true';
 const isHeadlessVerify = isSmokeTest || isPocVerify;
 
+async function shutdownAndExit(exitCode: number): Promise<void> {
+  if (isExiting) return;
+  isExiting = true;
+
+  // Hard OS-level exit failsafe so headless Windows runs can never hang during teardown
+  setTimeout(() => {
+    process.exit(exitCode);
+  }, 1500).unref();
+
+  try {
+    translator?.destroy();
+    translator = null;
+  } catch {
+    // ignore
+  }
+
+  try {
+    await tiroManager?.destroyAsync();
+    tiroManager = null;
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.destroy();
+    }
+    mainWindow = null;
+  } catch {
+    // ignore
+  }
+
+  app.exit(exitCode);
+}
+
 if (isHeadlessVerify) {
   app.disableHardwareAcceleration();
   setTimeout(() => {
     console.error('[VERIFY_TIMEOUT] Headless Electron verification timed out after 30s');
-    app.exit(1);
+    void shutdownAndExit(1);
   }, 30000).unref();
 }
 
@@ -135,6 +171,11 @@ function createMainWindow(): void {
   mainWindow.on('moved', broadcastWindowState);
   mainWindow.on('resized', broadcastWindowState);
 
+  // Detach WebContentsView BEFORE BrowserWindow itself is destroyed (prevents Windows shutdown hang)
+  mainWindow.on('close', () => {
+    tiroManager?.destroy();
+  });
+
   mainWindow.on('closed', () => {
     tiroManager?.destroy();
     tiroManager = null;
@@ -151,7 +192,7 @@ function createMainWindow(): void {
   if (isHeadlessVerify) {
     mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
       console.error(`[VERIFY_FAIL] did-fail-load: ${errorCode} ${errorDescription}`);
-      app.exit(1);
+      void shutdownAndExit(1);
     });
   }
 
@@ -374,14 +415,14 @@ async function runAutomatedPocVerification(): Promise<void> {
 
     if (uniqueIds.length !== 3 || finalSentences.length !== 3 || rendererCardCount < 3) {
       console.error('[POC_VERIFY_ASSERT_FAIL]', summary);
-      app.exit(1);
+      await shutdownAndExit(1);
       return;
     }
 
-    app.exit(0);
+    await shutdownAndExit(0);
   } catch (err) {
     console.error('[POC_VERIFY_ERROR]', err);
-    app.exit(1);
+    await shutdownAndExit(1);
   }
 }
 
@@ -611,7 +652,7 @@ function registerIpcHandlers(): void {
     if (isSmokeTest) {
       console.log(`[SMOKE_TEST_PASS] ${summary}`);
       setTimeout(() => {
-        app.exit(0);
+        void shutdownAndExit(0);
       }, 150);
     }
   });
@@ -656,7 +697,13 @@ app.whenReady().then(() => {
   });
 });
 
+app.on('before-quit', () => {
+  translator?.destroy();
+  tiroManager?.destroy();
+});
+
 app.on('window-all-closed', () => {
   translator?.destroy();
+  tiroManager?.destroy();
   app.quit();
 });
