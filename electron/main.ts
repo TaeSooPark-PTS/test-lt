@@ -26,6 +26,10 @@ const isHeadlessVerify = isSmokeTest || isPocVerify;
 
 if (isHeadlessVerify) {
   app.disableHardwareAcceleration();
+  setTimeout(() => {
+    console.error('[VERIFY_TIMEOUT] Headless Electron verification timed out after 30s');
+    app.exit(1);
+  }, 30000).unref();
 }
 
 const SETUP_WINDOW_SIZE = { width: 1440, height: 900 };

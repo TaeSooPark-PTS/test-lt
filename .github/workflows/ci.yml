@@ -42,9 +42,6 @@ jobs:
     name: Windows E2E Smoke, Pipeline Verify & NSIS Installer
     runs-on: windows-latest
     timeout-minutes: 20
-    env:
-      ELECTRON_CACHE: ${{ runner.temp }}\electron-cache
-      ELECTRON_BUILDER_CACHE: ${{ runner.temp }}\electron-builder-cache
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -71,9 +68,11 @@ jobs:
         run: npm run poc:verify:ci
 
       - name: Build Windows x64 NSIS Installer & Unpacked App
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run dist:win
 
-      - name: Verify Windows unpacked ASAR & ONNX WASM runtime integrity
+      - name: Verify Windows unpacked ASAR, ONNX WASM runtime & packaged EXE smoke boot
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -89,6 +88,12 @@ jobs:
             }
             Write-Host "Verified: $p"
           }
+
+          $proc = Start-Process -FilePath $exePath -ArgumentList '--smoke-test' -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            throw "Packaged Windows EXE smoke test failed with exit code $($proc.ExitCode)"
+          }
+          Write-Host "Verified packaged Windows EXE smoke boot (ExitCode: $($proc.ExitCode))"
 
           $installers = @(Get-ChildItem -Path "release" -Filter "*Setup*.exe" -ErrorAction SilentlyContinue)
           if ($installers.Count -eq 0) {
